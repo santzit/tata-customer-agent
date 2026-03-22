@@ -57,7 +57,6 @@ def mock_chatwoot_client():
 @pytest.fixture()
 def test_client(
     require_pg,
-    require_openai,
     pg_dsn,
     pg_test_vector_table,
     pg_test_memory_table,
@@ -66,14 +65,16 @@ def test_client(
     """Build a FastAPI TestClient with real services.
 
     Uses:
-    - Real OpenAI (chat completions + embeddings) — respects OPENAI_API_KEY env var.
-    - Real PostgreSQL/pgvector for the knowledge store.
+    - Real PostgreSQL/pgvector for the knowledge store (no OpenAI call at fixture setup).
     - Real PostgreSQL for conversation memory.
     - Synchronous :class:`~app.message_buffer.MessageBuffer` (``delay_seconds=0``)
       so each POST blocks until the agent has replied to Chatwoot.
     - MagicMock for the outbound Chatwoot HTTP client.
 
-    Skips automatically when PostgreSQL or OpenAI is not reachable.
+    No OpenAI API call is made during fixture setup — the OpenAI client is created
+    (object only) but never called until an agent-routed message arrives.
+
+    Skips automatically when PostgreSQL is not reachable.
     """
     from app.config import settings
     from app.conversation_memory import ConversationMemory
@@ -155,7 +156,7 @@ def test_webhook_ignores_empty_content(test_client):
 def test_webhook_processes_incoming_message(test_client, mock_chatwoot_client):
     """A valid incoming customer message triggers a real agent reply via Chatwoot."""
     payload = _make_chatwoot_payload(
-        content="What kind of gym activities do you offer?",
+        content="Hi, what can I do here?",
         conversation_id=4200,
     )
     response = test_client.post("/webhook", json=payload)
@@ -297,7 +298,7 @@ def test_conversation_memory_history_filters_by_conversation(
 
 
 def test_pg_vector_store_upsert_and_search(
-    require_pg, require_openai, pg_dsn, pg_test_vector_table
+    require_pg, pg_dsn, pg_test_vector_table
 ):
     """PgVectorStore upserts documents and retrieves them via real cosine similarity.
 

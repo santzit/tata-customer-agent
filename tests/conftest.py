@@ -1,13 +1,25 @@
-"""Shared pytest fixtures for the Tata agent test suite."""
+"""Shared pytest fixtures for the Tata agent test suite.
+
+A ``.env`` file in the project root is loaded automatically at session start
+so that local credentials (OPENAI_API_KEY, POSTGRES_DSN, etc.) are available
+without exporting them by hand.  CI injects the same variables via GitHub
+Actions secrets/variables, so no ``.env`` file is needed there.
+"""
 from __future__ import annotations
 
 import os
+import pathlib
 
 import psycopg2
 import pytest
+from dotenv import load_dotenv
+
+# Load .env from the repo root (ignored by git, created by each developer).
+# Variables already set in the environment take precedence (CI secrets win).
+load_dotenv(pathlib.Path(__file__).parent.parent / ".env", override=False)
 
 # PostgreSQL DSN for the test database.  In CI this points at the
-# pgvector service container; override locally via POSTGRES_DSN.
+# pgvector service container; override locally via POSTGRES_DSN or .env.
 _PG_DSN = os.environ.get(
     "POSTGRES_DSN",
     "postgresql://postgres:postgres@localhost:5432/tata_agent",
@@ -17,8 +29,6 @@ _PG_DSN = os.environ.get(
 # never interfere with a live deployment sharing the same database.
 _TEST_VECTOR_TABLE = "tata_knowledge_test"
 _TEST_MEMORY_TABLE = "tata_conversations_test"
-
-_KNOWN_DUMMY_KEYS = {"sk-test-dummy", "sk-placeholder", ""}
 
 
 # ---------------------------------------------------------------------------
@@ -49,26 +59,14 @@ def require_pg(pg_dsn: str) -> None:
     """Skip any test that declares this fixture when PostgreSQL is not reachable.
 
     In CI the pgvector service container is always present.  During offline
-    local development without Docker, DB-dependent tests skip gracefully
-    instead of failing with a connection error.
+    local development without a running Postgres, DB-dependent tests skip
+    gracefully instead of failing with a connection error.
     """
     try:
         conn = psycopg2.connect(pg_dsn, connect_timeout=3)
         conn.close()
     except Exception as exc:
         pytest.skip(f"PostgreSQL not reachable: {exc}")
-
-
-@pytest.fixture(scope="session")
-def require_openai() -> None:
-    """Skip any test that declares this fixture when OPENAI_API_KEY is not set.
-
-    In CI the secret is always configured.  During local development without
-    an API key, OpenAI-dependent tests skip gracefully instead of failing.
-    """
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if key in _KNOWN_DUMMY_KEYS:
-        pytest.skip("OPENAI_API_KEY is not configured -- skipping OpenAI tests")
 
 
 # ---------------------------------------------------------------------------
@@ -84,24 +82,26 @@ def ensure_pg_schema(
 ) -> None:
     """Create the pgvector extension and test tables once for the whole session.
 
-    Uses the real PostgreSQL/pgvector service so that integration tests interact
-    with an actual database.  Skips silently when the DB is not reachable;
-    individual tests that need the DB declare the ``require_pg`` fixture.
+    Also truncates both tables so every session starts with a clean slate,
+    preventing stale rows from a previous run from causing assertion failures.
     """
-    # Only skip if the DB is not reachable at all.
     try:
         conn = psycopg2.connect(pg_dsn, connect_timeout=3)
         conn.close()
     except Exception:
-        return  # DB not available; unit tests that mock psycopg2 are unaffected.
+        return  # DB not available; pure unit tests are unaffected.
 
-    # DB is available — create schema.  Errors here are real failures and
-    # must not be silently swallowed, so no try/except wraps the block below.
     from app.conversation_memory import ConversationMemory
     from app.pg_vector_store import PgVectorStore
 
-    # ensure_table() only runs DDL — no OpenAI embedding call is made.
-    # Pass a dummy DSN-only store to bootstrap the tables; the real stores
-    # created per-test will use a real OpenAI client for embedding calls.
     PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table).ensure_table()
     ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()
+
+    conn = psycopg2.connect(pg_dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"TRUNCATE TABLE {pg_test_vector_table} RESTART IDENTITY")
+            cur.execute(f"TRUNCATE TABLE {pg_test_memory_table} RESTART IDENTITY")
+        conn.commit()
+    finally:
+        conn.close()

@@ -17,7 +17,6 @@ has been notified — no ``time.sleep`` is needed.
 
 from __future__ import annotations
 
-import os
 import pathlib
 import re
 from unittest.mock import MagicMock, patch
@@ -81,20 +80,6 @@ def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Skip guard
-# ---------------------------------------------------------------------------
-
-_api_key = os.environ.get("OPENAI_API_KEY", "")
-_KNOWN_DUMMY_KEYS = {"sk-test-dummy", "sk-placeholder", ""}
-_key_is_real = _api_key not in _KNOWN_DUMMY_KEYS
-
-requires_openai = pytest.mark.skipif(
-    not _key_is_real,
-    reason="OPENAI_API_KEY is not configured -- skipping live tests",
-)
-
-
-# ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
 
@@ -140,7 +125,6 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
 # ===========================================================================
 
 
-@requires_openai
 class TestLiveSimulations:
     """Full pipeline tests: real OpenAI + real pgvector + real memory + mock Chatwoot.
 

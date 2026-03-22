@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# hooks/pre-commit — git pre-commit hook for tata-customer-agent
+#
+# Runs the full test suite before every commit.
+# - Loads .env from the repo root automatically (same as conftest.py).
+# - Requires OPENAI_API_KEY and a running PostgreSQL with pgvector.
+# - Blocks the commit if any test fails.
+#
+# Install once with:
+#   make install-hooks
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Load .env if it exists (makes OPENAI_API_KEY etc. available without export).
+if [ -f "$REPO_ROOT/.env" ]; then
+    set -o allexport
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/.env"
+    set +o allexport
+fi
+
+# Guard: require OPENAI_API_KEY — fail early with a clear message.
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo -e "${RED}✖ OPENAI_API_KEY is not set.${NC}"
+    echo "  Add it to your .env file or export it before committing:"
+    echo "    echo 'OPENAI_API_KEY=sk-...' >> .env"
+    exit 1
+fi
+
+# Use env var or fall back to the standard local DSN.
+export POSTGRES_DSN="${POSTGRES_DSN:-postgresql://postgres:postgres@localhost:5432/tata_agent}"
+
+echo -e "${YELLOW}▶ pre-commit: running tests…${NC}"
+
+if python -m pytest tests/ --tb=short -q; then
+    echo -e "${GREEN}✔ All tests passed — commit allowed.${NC}"
+else
+    echo -e "${RED}✖ Tests failed — commit blocked. Fix the failures above then retry.${NC}"
+    exit 1
+fi
