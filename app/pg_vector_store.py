@@ -152,7 +152,7 @@ class PgVectorStore:
                     f"""
                     SELECT text, metadata
                     FROM {self._table}
-                    ORDER BY embedding <=> %s
+                    ORDER BY embedding <=> %s::vector
                     LIMIT %s
                     """,
                     (vector, top_k),
