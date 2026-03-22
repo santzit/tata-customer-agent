@@ -37,6 +37,10 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
     This function runs in the :class:`~app.message_buffer.MessageBuffer` timer
     thread after the debounce window expires.  It calls the LangGraph agent with
     the combined text and delivers each reply part to Chatwoot.
+
+    When the supervisor escalates the conversation to a human agent, the
+    escalation message is sent to the customer and the conversation status is
+    changed to ``"open"`` so a human agent can take over in Chatwoot.
     """
     logger.info(
         "Processing buffered messages for conversation %d (%d chars)",
@@ -44,7 +48,7 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
         len(combined_text),
     )
     try:
-        reply_parts = run_agent(
+        reply_parts, needs_human = run_agent(
             user_message=combined_text,
             vector_store=_vector_store,
             conversation_memory=_conversation_memory,
@@ -61,6 +65,8 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
             _chatwoot_client.send_message(
                 conversation_id=conversation_id, message=part
             )
+        if needs_human:
+            _chatwoot_client.handover_to_human(conversation_id=conversation_id)
     except Exception as exc:
         logger.exception(
             "Failed to send reply to Chatwoot for conversation %d: %s",
@@ -107,12 +113,16 @@ def _verify_webhook_token(token: str | None) -> None:
 
 
 def _is_incoming_customer_message(payload: dict) -> bool:
-    """Return True only for new messages sent *by* a contact (not the agent)."""
+    """Return True only for new messages sent *by* a contact (not the agent).
+
+    The Chatwoot agent bot webhook sends a flat payload where ``message_type``
+    is a string (``"incoming"`` for customer messages, ``"outgoing"`` for agent
+    or bot replies, ``"template"`` for channel-template messages) at the top
+    level of the payload — not nested inside a ``"message"`` key.
+    """
     if payload.get("event") != "message_created":
         return False
-    msg = payload.get("message", {})
-    # message_type: 0 = incoming, 1 = outgoing, 2 = activity
-    return msg.get("message_type") == 0
+    return payload.get("message_type") == "incoming"
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +161,19 @@ async def chatwoot_webhook(
     if not _is_incoming_customer_message(payload):
         return {"status": "ignored"}
 
-    msg = payload["message"]
-    conversation_id: int = msg.get("conversation_id") or payload.get("conversation", {}).get("id")
-    user_text: str = msg.get("content", "")
+    # Real Chatwoot agent bot payload: content and conversation_id are top-level fields.
+    # The conversation object contains the internal id (int) and the display_id (str).
+    user_text: str = payload.get("content", "")
+    conversation: dict = payload.get("conversation", {})
+    raw_conv_id = (
+        payload.get("conversation_id")
+        or conversation.get("id")
+        or conversation.get("display_id")
+    )
+    try:
+        conversation_id: int = int(raw_conv_id) if raw_conv_id is not None else 0
+    except (TypeError, ValueError):
+        conversation_id = 0
 
     if not user_text or not conversation_id:
         return {"status": "ignored", "reason": "empty message or missing conversation_id"}

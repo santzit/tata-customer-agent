@@ -28,21 +28,27 @@ from fastapi.testclient import TestClient
 def _make_chatwoot_payload(
     content: str = "Hello, I need help!",
     conversation_id: int = 42,
-    message_type: int = 0,
+    message_type: str = "incoming",
     event: str = "message_created",
 ) -> dict:
-    """Return a minimal Chatwoot webhook payload for a new incoming message."""
+    """Return a minimal Chatwoot agent bot webhook payload for a new incoming message.
+
+    The real Chatwoot agent bot webhook sends a **flat** payload where
+    ``message_type`` is a string (``"incoming"`` / ``"outgoing"`` /
+    ``"template"``) and ``content`` lives at the top level — not nested inside
+    a ``"message"`` object as in the regular Chatwoot webhook.
+    """
     return {
         "event": event,
-        "message": {
-            "id": 1,
-            "content": content,
-            "message_type": message_type,
-            "conversation_id": conversation_id,
-        },
+        "id": 1,
+        "message_type": message_type,
+        "content": content,
+        "content_type": "text",
         "conversation": {
             "id": conversation_id,
+            "display_id": str(conversation_id),
         },
+        "account": {"id": 1, "name": "Test Account"},
     }
 
 
@@ -126,15 +132,15 @@ def test_webhook_ignores_non_message_created_event(test_client):
 
 def test_webhook_ignores_outgoing_messages(test_client):
     """Outgoing messages (sent by the agent) must not trigger a reply loop."""
-    payload = _make_chatwoot_payload(message_type=1)  # 1 = outgoing
+    payload = _make_chatwoot_payload(message_type="outgoing")
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
 
 
 def test_webhook_ignores_activity_messages(test_client):
-    """Activity messages (system events) should be ignored."""
-    payload = _make_chatwoot_payload(message_type=2)
+    """Non-incoming message types (e.g. template) should be ignored."""
+    payload = _make_chatwoot_payload(message_type="template")
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"

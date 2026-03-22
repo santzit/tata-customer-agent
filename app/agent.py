@@ -359,8 +359,8 @@ def run_agent(
     conversation_memory: Any,
     conversation_id: int = 0,
     openai_client: OpenAI | None = None,
-) -> list[str]:
-    """Run the agent and return the approved message parts.
+) -> tuple[list[str], bool]:
+    """Run the agent and return the approved message parts with a handover flag.
 
     Each element of the returned list is an individual message to be delivered
     to the customer in order.  Normally this is a single string, but the agent
@@ -368,7 +368,9 @@ def run_agent(
     clarity.
 
     When the supervisor flags the response, a single-element list containing
-    the human escalation message is returned instead.
+    the human escalation message is returned together with ``needs_human=True``
+    so the caller can change the Chatwoot conversation status to ``"open"``
+    and hand the conversation off to a human agent.
 
     Args:
         user_message: The message received from the user/Chatwoot.
@@ -379,7 +381,9 @@ def run_agent(
         openai_client: Optional pre-configured OpenAI client.
 
     Returns:
-        An ordered list of message strings to send to the customer.
+        A tuple of ``(message_parts, needs_human)`` where *message_parts* is
+        an ordered list of strings to send to the customer and *needs_human*
+        is ``True`` when the supervisor escalated the conversation.
     """
     agent = build_agent(vector_store, conversation_memory, openai_client)
     initial_state: AgentState = {
@@ -391,4 +395,4 @@ def run_agent(
         "needs_human_review": False,
     }
     final_state = agent.invoke(initial_state)
-    return final_state["messages"]
+    return final_state["messages"], final_state["needs_human_review"]

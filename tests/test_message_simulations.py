@@ -68,15 +68,23 @@ def _collect_chatwoot_reply(mock_chatwoot: MagicMock) -> str:
 
 
 def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
+    """Return a minimal real Chatwoot agent bot webhook payload.
+
+    The Chatwoot agent bot webhook sends a **flat** payload where
+    ``message_type`` is the string ``"incoming"`` for customer messages and
+    ``content`` sits at the top level — not nested under a ``"message"`` key.
+    """
     return {
         "event": "message_created",
-        "message": {
-            "id": 1,
-            "content": content,
-            "message_type": 0,  # 0 = incoming customer message
-            "conversation_id": conversation_id,
+        "id": 1,
+        "message_type": "incoming",
+        "content": content,
+        "content_type": "text",
+        "conversation": {
+            "id": conversation_id,
+            "display_id": str(conversation_id),
         },
-        "conversation": {"id": conversation_id},
+        "account": {"id": 1, "name": "Test Account"},
     }
 
 
