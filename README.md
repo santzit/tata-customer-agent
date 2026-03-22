@@ -53,18 +53,38 @@ ngrok http 8000
 ## Running tests
 
 ```bash
+# 1. Install Python dependencies
 pip install -r requirements.txt
 
-# Run the full test suite (requires OPENAI_API_KEY and PostgreSQL with pgvector)
-POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/tata_agent \
-OPENAI_API_KEY=sk-... \
+# 2. Start PostgreSQL with pgvector (Docker — recommended for local dev)
+docker run -d \
+  --name tata-pgvector \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=tata_agent \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16
+
+# 3. Create your .env file and set credentials
+cp .env.example .env
+# Open .env and set OPENAI_API_KEY=sk-...
+# POSTGRES_DSN is pre-filled to match the Docker command above
+
+# 4. Run the full test suite
 pytest --tb=short -v -s
 ```
 
 Tests use **real services** (OpenAI + PostgreSQL/pgvector).  Only the outbound
-Chatwoot HTTP client is replaced by a `MagicMock`.  Missing `OPENAI_API_KEY`
-causes tests to **fail** (not skip), giving a clear error.  Put your credentials
-in a `.env` file — it is loaded automatically by the test suite.
+Chatwoot HTTP client is replaced by a `MagicMock`.
+
+- `OPENAI_API_KEY` must be set in `.env` — the test suite loads it automatically
+  via `load_dotenv()`.  In CI it comes from the repository secret
+  `OPENAI_API_KEY` (Settings → Secrets and variables → Actions).  Never pass
+  the key inline on the command line or commit it to source control.
+- A missing or invalid `OPENAI_API_KEY` causes tests to **fail** (not skip)
+  with an `APIConnectionError`.
+- The pgvector Docker image (`pgvector/pgvector:pg16`) ships with the
+  `vector` extension pre-installed.  Plain PostgreSQL will not work.
 
 ## Environment variables
 

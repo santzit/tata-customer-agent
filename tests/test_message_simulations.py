@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -385,3 +386,58 @@ class TestLiveSimulations:
 
         history_after_3 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_3) == 6
+
+    def test_message_debounce_batching(self, live_infrastructure):
+        """Live: two messages sent within the debounce window are batched into one reply.
+
+        Uses a short debounce window (0.3 s) so the test finishes quickly while
+        still exercising the real timer/batching path through the full agent
+        pipeline (real OpenAI + real pgvector).
+
+        Timeline:
+            t=0.0s  msg1 "Hi" arrives       → queued, 0.3 s timer starts
+            t=0.1s  msg2 "What plans?" arrives → timer resets to 0.3 s
+            t=0.0–0.4s  no Chatwoot call yet (both messages still buffered)
+            t≈0.4s  timer fires             → agent processes BOTH messages together
+                                              → single Chatwoot reply
+        """
+        from app.main import _process_buffered_messages
+        from app.message_buffer import MessageBuffer
+
+        client, memory, mock_chatwoot = live_infrastructure
+        conv_id = 2009
+        mock_chatwoot.reset_mock()
+
+        short_buffer = MessageBuffer(delay_seconds=0.3, on_flush=_process_buffered_messages)
+
+        with patch("app.main._message_buffer", short_buffer):
+            # Send two messages quickly — both should be buffered, no reply yet.
+            r1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+            assert r1.json()["status"] == "queued"
+
+            time.sleep(0.1)  # still inside the 0.3 s window
+            r2 = client.post(
+                "/webhook",
+                json=_make_webhook_payload("What are your membership plans?", conv_id),
+            )
+            assert r2.json()["status"] == "queued"
+
+            # Neither message should have triggered a Chatwoot call yet.
+            assert not mock_chatwoot.send_message.called, (
+                "Agent replied before the debounce window expired"
+            )
+
+            # Wait for the debounce window to expire and the agent to finish.
+            time.sleep(1.5)
+
+        # Both messages were batched → exactly one agent round-trip → Chatwoot called.
+        assert mock_chatwoot.send_message.called, "Agent never replied after debounce window"
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
+        _print_reply("Hi + What are your membership plans?", reply)
+
+        # The batched reply should address the pricing question (not just a bare greeting).
+        assert any(kw in reply.lower() for kw in (
+            "plan", "basic", "standard", "premium", "r$", "150", "250", "400",
+            "membership", "price", "help", "how can",
+        )), f"Batched reply does not address the pricing question: {reply!r}"
