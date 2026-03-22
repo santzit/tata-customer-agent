@@ -13,7 +13,6 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 from pgvector.psycopg2 import register_vector
-from openai import OpenAI
 
 from app.config import settings
 
@@ -34,7 +33,7 @@ class PgVectorStore:
         # Table name comes from trusted config, not user input.
         self._dsn = dsn or settings.postgres_dsn
         self._table = table or settings.pg_vector_table
-        self._openai = openai_client or OpenAI(api_key=settings.openai_api_key)
+        self._openai = openai_client or settings.make_openai_client()
 
     # ------------------------------------------------------------------
     # Connection helper
@@ -93,7 +92,7 @@ class PgVectorStore:
 
     def _embed(self, text: str) -> list[float]:
         response = self._openai.embeddings.create(
-            model=settings.openai_embedding_model,
+            model=settings.embedding_model_small,
             input=text,
         )
         return response.data[0].embedding

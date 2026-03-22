@@ -16,7 +16,11 @@ Two-way approach
 
 To run the live tests locally:
 
-    OPENAI_API_KEY=sk-... pytest tests/test_message_simulations.py -v
+    OPENAI_API_KEY=sk-... LLM_MODEL=gpt-4.1 pytest tests/test_message_simulations.py -v
+
+For Azure OpenAI, also set OPENAI_API_ENDPOINT:
+
+    OPENAI_API_KEY=<key> OPENAI_API_ENDPOINT=https://<resource>.cognitiveservices.azure.com/openai/v1/ LLM_MODEL=gpt-4.1 pytest tests/test_message_simulations.py -v
 """
 
 from __future__ import annotations
@@ -60,8 +64,16 @@ def _make_mock_openai_client(reply: str) -> MagicMock:
 
 
 def _real_openai_client() -> OpenAI:
-    """Return a real OpenAI client using the environment API key."""
-    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    """Return a real OpenAI client using the environment API key and optional endpoint.
+
+    When ``OPENAI_API_ENDPOINT`` is set the client points at that base URL,
+    enabling Azure OpenAI Cognitive Services endpoints.
+    """
+    kwargs: dict = {"api_key": os.environ["OPENAI_API_KEY"]}
+    endpoint = os.environ.get("OPENAI_API_ENDPOINT", "")
+    if endpoint:
+        kwargs["base_url"] = endpoint
+    return OpenAI(**kwargs)
 
 
 def _run_mocked(

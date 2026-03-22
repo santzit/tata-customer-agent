@@ -6,10 +6,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # OpenAI
+    # OpenAI / Azure OpenAI
+    # Map directly to the GitHub Actions secret and variables:
+    #   secrets.OPENAI_API_KEY      → openai_api_key
+    #   vars.LLM_MODEL              → llm_model
+    #   vars.LLM_PROVIDER           → llm_provider  ("openai" or "azure")
+    #   vars.OPENAI_API_ENDPOINT    → openai_api_endpoint  (Azure Cognitive Services URL)
+    #   vars.EMBEDDING_MODEL_SMALL  → embedding_model_small
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
-    openai_embedding_model: str = "text-embedding-3-small"
+    llm_model: str = "gpt-4.1"
+    llm_provider: str = "openai"
+    openai_api_endpoint: str = ""  # set to Azure endpoint to use Azure OpenAI
+    embedding_model_small: str = "text-embedding-3-small"
 
     # PostgreSQL / pgvector
     # Use the same Postgres that Chatwoot already runs.
@@ -26,6 +34,20 @@ class Settings(BaseSettings):
 
     # Webhook
     webhook_token: str = ""
+
+    def make_openai_client(self):
+        """Create an OpenAI client.
+
+        If ``openai_api_endpoint`` is set the client points at that base URL,
+        which enables Azure OpenAI Cognitive Services endpoints
+        (e.g. ``https://<resource>.cognitiveservices.azure.com/openai/v1/``).
+        """
+        from openai import OpenAI
+
+        kwargs: dict = {"api_key": self.openai_api_key}
+        if self.openai_api_endpoint:
+            kwargs["base_url"] = self.openai_api_endpoint
+        return OpenAI(**kwargs)
 
 
 settings = Settings()

@@ -40,7 +40,7 @@ class AgentState(TypedDict):
 
 
 def load_history_node(state: AgentState, *, conversation_memory: Any) -> AgentState:
-    """Load previous conversation turns from Qdrant memory."""
+    """Load previous conversation turns from PostgreSQL memory."""
     history = conversation_memory.get_history(state["conversation_id"])
     return {**state, "history": history}
 
@@ -70,7 +70,7 @@ def generate_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
         }
     )
     completion = openai_client.chat.completions.create(
-        model=settings.openai_model,
+        model=settings.llm_model,
         messages=messages,
     )
     response = completion.choices[0].message.content or ""
@@ -112,7 +112,7 @@ def build_agent(
     Returns:
         A compiled LangGraph ``CompiledGraph`` ready to be invoked.
     """
-    client = openai_client or OpenAI(api_key=settings.openai_api_key)
+    client = openai_client or settings.make_openai_client()
 
     graph = StateGraph(AgentState)
 

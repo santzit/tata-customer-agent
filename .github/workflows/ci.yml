@@ -29,9 +29,13 @@ jobs:
       - name: Run tests
         run: pytest --tb=short -v
         env:
-          # Real key used by test_message_simulations.py (live OpenAI calls).
-          # Tests in that file are skipped automatically when the secret is absent.
+          # GitHub Actions secret
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # GitHub Actions variables (set in repository Settings → Variables)
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          OPENAI_API_ENDPOINT: ${{ vars.OPENAI_API_ENDPOINT }}
+          EMBEDDING_MODEL_SMALL: ${{ vars.EMBEDDING_MODEL_SMALL }}
           # Dummy values for services that are mocked in all other tests
           CHATWOOT_API_TOKEN: "test-token"
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"

@@ -94,7 +94,7 @@ def test_client(mock_vector_store, mock_conversation_memory, mock_openai_client,
             "app.main.run_agent",
             side_effect=lambda user_message, vector_store, conversation_memory, conversation_id=0, **kw: (
                 mock_openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4.1",
                     messages=[{"role": "user", "content": user_message}],
                 ).choices[0].message.content
             ),
