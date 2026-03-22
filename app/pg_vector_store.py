@@ -18,8 +18,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_VECTOR_SIZE = 1536  # text-embedding-3-small output dimension
-
 
 class PgVectorStore:
     """Manages the pgvector table and cosine-similarity search."""
@@ -29,11 +27,15 @@ class PgVectorStore:
         dsn: str | None = None,
         table: str | None = None,
         openai_client: Any | None = None,
+        embedding_model: str | None = None,
+        vector_size: int | None = None,
     ) -> None:
         # Table name comes from trusted config, not user input.
         self._dsn = dsn or settings.postgres_dsn
         self._table = table or settings.pg_vector_table
         self._openai = openai_client or settings.make_openai_client()
+        self._embedding_model = embedding_model or settings.embedding_model_small
+        self._vector_size = vector_size or settings.embedding_dimension
 
     # ------------------------------------------------------------------
     # Connection helper
@@ -78,20 +80,23 @@ class PgVectorStore:
                     CREATE TABLE IF NOT EXISTS {self._table} (
                         id TEXT PRIMARY KEY,
                         text TEXT NOT NULL,
-                        embedding vector({_VECTOR_SIZE}),
+                        embedding vector({self._vector_size}),
                         metadata JSONB DEFAULT '{{}}'
                     )
                     """
                 )
+                # Use HNSW instead of IVFFlat:
+                # - HNSW is an incremental online index that works correctly
+                #   even when the index is created before any rows are inserted.
+                # - IVFFlat requires the centroids to be computed from existing
+                #   data; an index created on an empty table has no centroids and
+                #   can miss results for small datasets.
                 cur.execute(
                     f"""
                     CREATE INDEX IF NOT EXISTS {self._table}_embedding_idx
-                    ON {self._table} USING ivfflat (embedding vector_cosine_ops)
+                    ON {self._table} USING hnsw (embedding vector_cosine_ops)
                     """
                 )
-                # Note: ivfflat needs enough rows to build list centroids.
-                # The index becomes effective once ~1000+ vectors are inserted.
-                # For small datasets, hnsw or a sequential scan is used instead.
         logger.info("Ensured pgvector table '%s'", self._table)
 
     # keep the same method name used in main.py lifespan
@@ -104,7 +109,7 @@ class PgVectorStore:
 
     def _embed(self, text: str) -> list[float]:
         response = self._openai.embeddings.create(
-            model=settings.embedding_model_small,
+            model=self._embedding_model,
             input=text,
         )
         return response.data[0].embedding

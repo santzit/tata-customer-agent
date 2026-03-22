@@ -727,6 +727,15 @@ class TestLiveSimulations:
         assert isinstance(reply_2, str) and len(reply_2) > 0
         _print_reply("What are the plans and prices", reply_2, turn=2)
 
+        # RAG must supply the pricing context — verify the reply actually contains
+        # pricing-related content rather than "I don't have that information".
+        reply_2_lower = reply_2.lower()
+        assert any(
+            kw in reply_2_lower for kw in ("plan", "learner", "professional", "explorer", "price", "$", "month")
+        ), (
+            f"Turn 2 reply does not mention pricing info (RAG likely failed): {reply_2!r}"
+        )
+
         history_after_2 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_2) == 4
         assert history_after_2[0] == {"role": "user", "content": "Hi"}

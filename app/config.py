@@ -8,16 +8,20 @@ class Settings(BaseSettings):
 
     # OpenAI / Azure OpenAI
     # Map directly to the GitHub Actions secret and variables:
-    #   secrets.OPENAI_API_KEY      → openai_api_key
-    #   vars.LLM_MODEL              → llm_model
-    #   vars.LLM_PROVIDER           → llm_provider  ("openai" or "azure")
-    #   vars.OPENAI_API_ENDPOINT    → openai_api_endpoint  (Azure Cognitive Services URL)
-    #   vars.EMBEDDING_MODEL_SMALL  → embedding_model_small
+    #   secrets.OPENAI_API_KEY       → openai_api_key
+    #   vars.LLM_MODEL               → llm_model
+    #   vars.LLM_PROVIDER            → llm_provider  ("openai" or "azure")
+    #   vars.OPENAI_API_ENDPOINT     → openai_api_endpoint  (Azure Cognitive Services URL)
+    #   vars.EMBEDDING_MODEL_SMALL   → embedding_model_small  (1536-dim by default)
+    #   vars.EMBEDDING_MODEL_LARGE   → embedding_model_large  (3072-dim by default)
+    #   vars.EMBEDDING_DIMENSION     → embedding_dimension  (must match the deployed model)
     openai_api_key: str = ""
     llm_model: str = "gpt-4.1"
     llm_provider: str = "openai"
     openai_api_endpoint: str = ""  # set to Azure endpoint to use Azure OpenAI
-    embedding_model_small: str = "text-embedding-3-small"
+    embedding_model_small: str = "text-embedding-3-small"  # 1536 dimensions
+    embedding_model_large: str = "text-embedding-3-large"  # 3072 dimensions
+    embedding_dimension: int = 1536  # vector column size; change to 3072 when using the large model
 
     # PostgreSQL / pgvector
     # Use the same Postgres that Chatwoot already runs.

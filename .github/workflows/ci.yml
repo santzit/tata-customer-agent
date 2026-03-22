@@ -59,5 +59,6 @@ jobs:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           OPENAI_API_ENDPOINT: ${{ vars.OPENAI_API_ENDPOINT }}
           EMBEDDING_MODEL_SMALL: ${{ vars.EMBEDDING_MODEL_SMALL }}
+          EMBEDDING_MODEL_LARGE: ${{ vars.EMBEDDING_MODEL_LARGE }}
           # Real PostgreSQL/pgvector service (see services.postgres above)
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
