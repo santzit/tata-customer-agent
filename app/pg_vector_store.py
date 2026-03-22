@@ -58,9 +58,21 @@ class PgVectorStore:
 
     def ensure_table(self) -> None:
         """Create the pgvector table and index if they do not already exist."""
-        with self._connection() as conn:
+        # Phase 1: bootstrap the extension using a plain psycopg2 connection.
+        # register_vector() (called inside _connection()) requires the vector
+        # type to already exist in the database, so we must CREATE EXTENSION
+        # before opening a register_vector()-aware connection.
+        conn = psycopg2.connect(self._dsn)
+        try:
             with conn.cursor() as cur:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Phase 2: now that the extension is present, register_vector works.
+        with self._connection() as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     f"""
                     CREATE TABLE IF NOT EXISTS {self._table} (

@@ -72,18 +72,24 @@ def ensure_pg_schema(
     """Create the pgvector extension and test tables once for the whole session.
 
     Uses the real PostgreSQL/pgvector service so that integration tests interact
-    with an actual database.  Completes silently when the DB is not reachable;
+    with an actual database.  Skips silently when the DB is not reachable;
     individual tests that need the DB declare the ``require_pg`` fixture.
     """
+    # Only skip if the DB is not reachable at all.
     try:
-        from app.conversation_memory import ConversationMemory
-        from app.pg_vector_store import PgVectorStore
-
-        # ensure_table() only runs DDL — no OpenAI embedding call is made.
-        mock_openai = MagicMock()
-        PgVectorStore(
-            dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai
-        ).ensure_table()
-        ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()
+        conn = psycopg2.connect(pg_dsn, connect_timeout=3)
+        conn.close()
     except Exception:
-        pass  # DB not available; unit tests that mock psycopg2 are unaffected.
+        return  # DB not available; unit tests that mock psycopg2 are unaffected.
+
+    # DB is available — create schema.  Errors here are real failures and
+    # must not be silently swallowed, so no try/except wraps the block below.
+    from app.conversation_memory import ConversationMemory
+    from app.pg_vector_store import PgVectorStore
+
+    # ensure_table() only runs DDL — no OpenAI embedding call is made.
+    mock_openai = MagicMock()
+    PgVectorStore(
+        dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai
+    ).ensure_table()
+    ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()
