@@ -689,12 +689,17 @@ class TestLiveSimulations:
         assert len(reply) > 0
         _print_reply("Hi there", reply)
 
-        # Agent should respond with a friendly greeting — not an "I don't know" message.
+        # Agent should respond with a simple, friendly greeting only — no unsolicited info.
         reply_lower = reply.lower()
         assert any(
             kw in reply_lower
-            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "gym", "academy")
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "good day", "how can")
         ), f"Greeting reply does not seem friendly: {reply!r}"
+        # First greeting must NOT proactively dump service/product information.
+        assert not any(
+            kw in reply_lower
+            for kw in ("plan", "r$", "150", "250", "400", "trial class", "yoga", "pilates", "crossfit")
+        ), f"First greeting reply contains unsolicited service info: {reply!r}"
 
         # Memory: both turns written to the DB.
         history = memory.get_history(conversation_id=conv_id)
@@ -928,11 +933,11 @@ class TestLiveSimulations:
         assert len(reply_1) > 0
         _print_reply("Hi", reply_1, turn=1)
 
-        # Agent should respond with a friendly greeting.
+        # Agent should respond with a simple greeting only — no unsolicited info.
         reply_1_lower = reply_1.lower()
         assert any(
             kw in reply_1_lower
-            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "gym", "academy")
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "good day", "how can")
         ), f"Turn 1 greeting reply does not seem friendly: {reply_1!r}"
 
         history_after_1 = memory.get_history(conversation_id=conv_id)
@@ -982,13 +987,10 @@ class TestLiveSimulations:
         assert "context does not" not in reply_3_lower and "context doesn't" not in reply_3_lower, (
             f"Turn 3 reply suggests RAG or memory context was empty: {reply_3!r}"
         )
-        # Should offer next steps referencing the previous conversation context.
+        # Should include a greeting and a contextual follow-up referencing the prior topic.
         assert any(
             kw in reply_3_lower
-            for kw in (
-                "hello", "hi", "hey", "welcome", "help", "assist", "anything", "more",
-                "nova", "gym", "academy", "class", "plan", "trial",
-            )
+            for kw in ("hello", "hi", "hey", "help", "anything", "more", "plan", "visit", "interested", "would you")
         ), f"Turn 3 greeting reply does not seem contextually aware: {reply_3!r}"
 
         # All 3 turns persisted — 6 rows in the DB.
