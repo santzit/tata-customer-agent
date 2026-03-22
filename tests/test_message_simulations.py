@@ -427,8 +427,15 @@ class TestLiveSimulations:
                 "Agent replied before the debounce window expired"
             )
 
-            # Wait for the debounce window to expire and the agent to finish.
-            time.sleep(1.5)
+            # Wait for the debounce window (0.3 s) to expire and for the agent to
+            # finish its OpenAI API call in the background thread (may take up to
+            # 60 s on a slow CI runner).  Poll every 0.5 s so we exit as soon as
+            # the reply arrives rather than always waiting the full timeout.
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                time.sleep(0.5)
+                if mock_chatwoot.send_message.called:
+                    break
 
         # Both messages were batched → exactly one agent round-trip → Chatwoot called.
         assert mock_chatwoot.send_message.called, "Agent never replied after debounce window"
