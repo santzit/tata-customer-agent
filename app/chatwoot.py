@@ -64,3 +64,30 @@ class ChatwootClient:
             response = client.post(url, json=payload, headers=self._headers())
             response.raise_for_status()
             return response.json()
+
+    def handover_to_human(self, conversation_id: int) -> dict:
+        """Hand over a conversation from the bot to a human agent.
+
+        Changes the conversation status from ``"pending"`` (bot-handled) to
+        ``"open"`` so that human agents can take over.  Once open, the bot
+        stops receiving events for that conversation unless the status is
+        switched back to ``"pending"``.
+
+        Args:
+            conversation_id: The Chatwoot conversation ID.
+
+        Returns:
+            The Chatwoot API response payload as a dict.
+
+        Raises:
+            httpx.HTTPStatusError: On non-2xx HTTP responses.
+        """
+        url = (
+            f"{self.base_url}/api/v1/accounts/{self.account_id}"
+            f"/conversations/{conversation_id}"
+        )
+        logger.info("Handing over conversation %d to a human agent.", conversation_id)
+        with httpx.Client(timeout=30) as client:
+            response = client.patch(url, json={"status": "open"}, headers=self._headers())
+            response.raise_for_status()
+            return response.json()

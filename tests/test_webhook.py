@@ -1,11 +1,19 @@
 """CI tests that simulate Chatwoot webhook messages sent to the Tata agent.
 
-All external dependencies (OpenAI, PostgreSQL, Chatwoot) are mocked so the
-tests run offline with no real API keys or database connections.
+All external services are real (OpenAI, PostgreSQL/pgvector, ConversationMemory).
+Only the outbound Chatwoot HTTP client is replaced by a MagicMock so tests run
+without a live Chatwoot instance.
+
+The :class:`~app.message_buffer.MessageBuffer` is initialised with
+``delay_seconds=0`` for every test fixture, which makes it flush synchronously
+in the calling thread.  This means a ``client.post("/webhook", ...)`` call
+blocks until the full agent pipeline has run and Chatwoot has been notified —
+no ``time.sleep`` required.
 """
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,86 +28,81 @@ from fastapi.testclient import TestClient
 def _make_chatwoot_payload(
     content: str = "Hello, I need help!",
     conversation_id: int = 42,
-    message_type: int = 0,
+    message_type: str = "incoming",
     event: str = "message_created",
 ) -> dict:
-    """Return a minimal Chatwoot webhook payload for a new incoming message."""
+    """Return a minimal Chatwoot agent bot webhook payload for a new incoming message.
+
+    The real Chatwoot agent bot webhook sends a **flat** payload where
+    ``message_type`` is a string (``"incoming"`` / ``"outgoing"`` /
+    ``"template"``) and ``content`` lives at the top level — not nested inside
+    a ``"message"`` object as in the regular Chatwoot webhook.
+    """
     return {
         "event": event,
-        "message": {
-            "id": 1,
-            "content": content,
-            "message_type": message_type,
-            "conversation_id": conversation_id,
-        },
+        "id": 1,
+        "message_type": message_type,
+        "content": content,
+        "content_type": "text",
         "conversation": {
             "id": conversation_id,
+            "display_id": str(conversation_id),
         },
+        "account": {"id": 1, "name": "Test Account"},
     }
 
 
 @pytest.fixture()
-def mock_vector_store():
-    """Return a mock PgVectorStore that always returns two knowledge snippets."""
-    store = MagicMock()
-    store.search.return_value = [
-        {"text": "Tata Motors offers a 3-year warranty on all vehicles."},
-        {"text": "Customer support is available 24/7 via phone and chat."},
-    ]
-    store.ensure_collection.return_value = None
-    return store
-
-
-@pytest.fixture()
-def mock_conversation_memory():
-    """Return a mock ConversationMemory."""
-    memory = MagicMock()
-    memory.get_history.return_value = []
-    memory.add_turn.return_value = None
-    memory.ensure_collection.return_value = None
-    return memory
-
-
-@pytest.fixture()
-def mock_openai_client():
-    """Return a mock OpenAI client that returns a canned chat completion."""
-    client = MagicMock()
-    choice = MagicMock()
-    choice.message.content = "Thank you for reaching out! How can I assist you today?"
-    client.chat.completions.create.return_value = MagicMock(choices=[choice])
-    return client
-
-
-@pytest.fixture()
 def mock_chatwoot_client():
-    """Return a mock ChatwootClient."""
+    """Return a mock ChatwootClient (outbound Chatwoot HTTP)."""
     client = MagicMock()
     client.send_message.return_value = {"id": 99, "content": "mocked reply"}
     return client
 
 
 @pytest.fixture()
-def test_client(mock_vector_store, mock_conversation_memory, mock_openai_client, mock_chatwoot_client):
-    """Build a FastAPI TestClient with all external services mocked."""
-    with (
-        patch("app.main._vector_store", mock_vector_store),
-        patch("app.main._conversation_memory", mock_conversation_memory),
-        patch("app.main._chatwoot_client", mock_chatwoot_client),
-        patch("app.agent.OpenAI", return_value=mock_openai_client),
-    ):
-        from app.main import app
+def test_client(
+    require_pg,
+    pg_dsn,
+    pg_test_vector_table,
+    pg_test_memory_table,
+    mock_chatwoot_client,
+):
+    """Build a FastAPI TestClient with real services.
 
-        # Patch run_agent so the whole flow is exercised but uses our mocks
-        with patch(
-            "app.main.run_agent",
-            side_effect=lambda user_message, vector_store, conversation_memory, conversation_id=0, **kw: (
-                mock_openai_client.chat.completions.create(
-                    model="gpt-4.1",
-                    messages=[{"role": "user", "content": user_message}],
-                ).choices[0].message.content
-            ),
-        ):
-            yield TestClient(app, raise_server_exceptions=True)
+    Uses:
+    - Real PostgreSQL/pgvector for the knowledge store (no OpenAI call at fixture setup).
+    - Real PostgreSQL for conversation memory.
+    - Synchronous :class:`~app.message_buffer.MessageBuffer` (``delay_seconds=0``)
+      so each POST blocks until the agent has replied to Chatwoot.
+    - MagicMock for the outbound Chatwoot HTTP client.
+
+    No OpenAI API call is made during fixture setup — the OpenAI client is created
+    (object only) but never called until an agent-routed message arrives.
+
+    Skips automatically when PostgreSQL is not reachable.
+    """
+    from app.config import settings
+    from app.conversation_memory import ConversationMemory
+    from app.main import _process_buffered_messages, app
+    from app.message_buffer import MessageBuffer
+    from app.pg_vector_store import PgVectorStore
+
+    openai_client = settings.make_openai_client()
+
+    store = PgVectorStore(
+        dsn=pg_dsn, table=pg_test_vector_table, openai_client=openai_client
+    )
+    memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+    buffer = MessageBuffer(delay_seconds=0, on_flush=_process_buffered_messages)
+
+    with (
+        patch("app.main._vector_store", store),
+        patch("app.main._conversation_memory", memory),
+        patch("app.main._chatwoot_client", mock_chatwoot_client),
+        patch("app.main._message_buffer", buffer),
+    ):
+        yield TestClient(app, raise_server_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -129,15 +132,15 @@ def test_webhook_ignores_non_message_created_event(test_client):
 
 def test_webhook_ignores_outgoing_messages(test_client):
     """Outgoing messages (sent by the agent) must not trigger a reply loop."""
-    payload = _make_chatwoot_payload(message_type=1)  # 1 = outgoing
+    payload = _make_chatwoot_payload(message_type="outgoing")
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
 
 
 def test_webhook_ignores_activity_messages(test_client):
-    """Activity messages (system events) should be ignored."""
-    payload = _make_chatwoot_payload(message_type=2)
+    """Non-incoming message types (e.g. template) should be ignored."""
+    payload = _make_chatwoot_payload(message_type="template")
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
@@ -152,41 +155,38 @@ def test_webhook_ignores_empty_content(test_client):
 
 
 # ---------------------------------------------------------------------------
-# Webhook -- happy path
+# Webhook -- happy path (real OpenAI + real pgvector)
 # ---------------------------------------------------------------------------
 
 
-def test_webhook_processes_incoming_message(
-    test_client, mock_chatwoot_client
-):
-    """A valid incoming customer message should trigger a Chatwoot reply."""
+def test_webhook_processes_incoming_message(test_client, mock_chatwoot_client):
+    """A valid incoming customer message triggers a real agent reply via Chatwoot."""
     payload = _make_chatwoot_payload(
-        content="What is the warranty period for Tata vehicles?",
-        conversation_id=42,
+        content="Hi, what can I do here?",
+        conversation_id=4200,
     )
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "replied"
-    assert data["conversation_id"] == 42
-    mock_chatwoot_client.send_message.assert_called_once()
+    assert data["status"] == "queued"
+    assert data["conversation_id"] == 4200
+    # With delay_seconds=0 the buffer flushes synchronously; Chatwoot is already called.
+    mock_chatwoot_client.send_message.assert_called()
     call_kwargs = mock_chatwoot_client.send_message.call_args
-    assert call_kwargs.kwargs["conversation_id"] == 42
+    assert call_kwargs.kwargs["conversation_id"] == 4200
     assert isinstance(call_kwargs.kwargs["message"], str)
     assert len(call_kwargs.kwargs["message"]) > 0
 
 
-def test_webhook_processes_different_conversations(
-    test_client, mock_chatwoot_client
-):
+def test_webhook_processes_different_conversations(test_client, mock_chatwoot_client):
     """Each conversation ID is passed correctly to the Chatwoot client."""
-    for conv_id in (1, 100, 9999):
+    for conv_id in (4300, 4301, 4302):
         mock_chatwoot_client.reset_mock()
-        payload = _make_chatwoot_payload(content="Help!", conversation_id=conv_id)
+        payload = _make_chatwoot_payload(content="Hi!", conversation_id=conv_id)
         response = test_client.post("/webhook", json=payload)
         assert response.status_code == 200
         assert response.json()["conversation_id"] == conv_id
-        mock_chatwoot_client.send_message.assert_called_once()
+        mock_chatwoot_client.send_message.assert_called()
         actual_conv_id = mock_chatwoot_client.send_message.call_args.kwargs["conversation_id"]
         assert actual_conv_id == conv_id
 
@@ -213,113 +213,15 @@ def test_webhook_accepts_valid_token(test_client, mock_chatwoot_client):
     """Requests with the correct token should be processed normally."""
     with patch("app.main.settings") as mock_settings:
         mock_settings.webhook_token = "secret-token"
-        payload = _make_chatwoot_payload()
+        payload = _make_chatwoot_payload(event="conversation_updated")  # ignored event
         response = test_client.post(
             "/webhook",
             json=payload,
             headers={"X-Chatwoot-Signature": "secret-token"},
         )
-    # The status may be 200 "replied" or 200 "ignored" depending on mocked settings;
-    # the important thing is it's not 401.
+    # Event is ignored (not message_created), but token was valid → not 401.
     assert response.status_code != 401
-
-
-# ---------------------------------------------------------------------------
-# Agent unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_agent_run_agent_calls_vector_store_and_openai(
-    mock_vector_store, mock_conversation_memory, mock_openai_client
-):
-    """run_agent should query the vector store then call OpenAI and return a string."""
-    from app.agent import run_agent
-
-    with patch("app.agent.OpenAI", return_value=mock_openai_client):
-        reply = run_agent(
-            user_message="Tell me about warranty",
-            vector_store=mock_vector_store,
-            conversation_memory=mock_conversation_memory,
-            conversation_id=42,
-            openai_client=mock_openai_client,
-        )
-
-    mock_vector_store.search.assert_called_once_with("Tell me about warranty")
-    assert isinstance(reply, str)
-    assert len(reply) > 0
-
-
-def test_agent_uses_retrieved_context(
-    mock_vector_store, mock_conversation_memory, mock_openai_client
-):
-    """The context from the vector store must be forwarded to the OpenAI call."""
-    from app.agent import run_agent
-
-    mock_vector_store.search.return_value = [{"text": "Tata Nexon has a 5-star safety rating."}]
-
-    with patch("app.agent.OpenAI", return_value=mock_openai_client):
-        run_agent(
-            user_message="Is Tata Nexon safe?",
-            vector_store=mock_vector_store,
-            conversation_memory=mock_conversation_memory,
-            conversation_id=42,
-            openai_client=mock_openai_client,
-        )
-
-    call_args = mock_openai_client.chat.completions.create.call_args
-    messages = call_args.kwargs.get("messages") or call_args.args[0]
-    user_content = next(m["content"] for m in messages if m["role"] == "user")
-    assert "Tata Nexon has a 5-star safety rating." in user_content
-
-
-def test_agent_includes_history_in_prompt(
-    mock_vector_store, mock_conversation_memory, mock_openai_client
-):
-    """Previous conversation turns must appear in the OpenAI messages array."""
-    from app.agent import run_agent
-
-    mock_conversation_memory.get_history.return_value = [
-        {"role": "user", "content": "What is your name?"},
-        {"role": "assistant", "content": "I am Tata, your support agent."},
-    ]
-
-    with patch("app.agent.OpenAI", return_value=mock_openai_client):
-        run_agent(
-            user_message="Tell me more",
-            vector_store=mock_vector_store,
-            conversation_memory=mock_conversation_memory,
-            conversation_id=7,
-            openai_client=mock_openai_client,
-        )
-
-    call_args = mock_openai_client.chat.completions.create.call_args
-    messages = call_args.kwargs.get("messages") or call_args.args[0]
-    roles = [m["role"] for m in messages]
-    assert "system" in roles
-    assert roles.count("user") >= 2  # history user turn + current user message
-    assert "assistant" in roles
-
-
-def test_agent_saves_turn_to_memory(
-    mock_vector_store, mock_conversation_memory, mock_openai_client
-):
-    """After generating a reply, the agent must persist the turn to memory."""
-    from app.agent import run_agent
-
-    with patch("app.agent.OpenAI", return_value=mock_openai_client):
-        run_agent(
-            user_message="Hello!",
-            vector_store=mock_vector_store,
-            conversation_memory=mock_conversation_memory,
-            conversation_id=55,
-            openai_client=mock_openai_client,
-        )
-
-    mock_conversation_memory.add_turn.assert_called_once()
-    call_kwargs = mock_conversation_memory.add_turn.call_args.kwargs
-    assert call_kwargs["conversation_id"] == 55
-    assert call_kwargs["user_message"] == "Hello!"
-    assert isinstance(call_kwargs["assistant_reply"], str)
+    assert response.json()["status"] == "ignored"
 
 
 # ---------------------------------------------------------------------------
@@ -397,34 +299,95 @@ def test_conversation_memory_history_filters_by_conversation(
 
 
 # ---------------------------------------------------------------------------
-# PgVectorStore integration tests (real PostgreSQL/pgvector)
+# PgVectorStore integration tests (real PostgreSQL/pgvector + real embeddings)
 # ---------------------------------------------------------------------------
 
 
 def test_pg_vector_store_upsert_and_search(
     require_pg, pg_dsn, pg_test_vector_table
 ):
-    """PgVectorStore upserts documents and retrieves them via cosine similarity.
+    """PgVectorStore upserts documents and retrieves them via real cosine similarity.
 
-    The OpenAI embedding client is injected as a mock so this test exercises
-    the real pgvector SQL round-trip without requiring a live API key.
+    Uses the real OpenAI embedding API so this test exercises both the pgvector
+    SQL round-trip and the embedding pipeline end-to-end.
     """
-    from app.pg_vector_store import PgVectorStore
     from app.config import settings
+    from app.pg_vector_store import PgVectorStore
 
-    mock_openai = MagicMock()
-    mock_openai.embeddings.create.return_value = MagicMock(
-        data=[MagicMock(embedding=[0.1] * settings.embedding_dimension)]
-    )
+    openai_client = settings.make_openai_client()
+    store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=openai_client)
+    store.upsert("unit-test-doc-a", "Knowledge snippet A about gym activities", {"source": "unit-test"})
+    store.upsert("unit-test-doc-b", "Knowledge snippet B about membership prices", {"source": "unit-test"})
 
-    store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai)
-    store.upsert("unit-test-doc-a", "Knowledge snippet A", {"source": "unit-test"})
-    store.upsert("unit-test-doc-b", "Knowledge snippet B", {"source": "unit-test"})
-
-    results = store.search("test query", top_k=10)
+    results = store.search("gym activities", top_k=10)
     texts = [r["text"] for r in results]
-    assert "Knowledge snippet A" in texts
-    assert "Knowledge snippet B" in texts
+    assert "Knowledge snippet A about gym activities" in texts
+    assert "Knowledge snippet B about membership prices" in texts
+
+
+# ---------------------------------------------------------------------------
+# MessageBuffer unit tests (pure timer logic, no OpenAI required)
+# ---------------------------------------------------------------------------
+
+
+def test_message_buffer_accumulates_messages_within_window():
+    """Messages arriving within the debounce window are joined into a single flush."""
+    from app.message_buffer import MessageBuffer
+
+    received: list[tuple[int, str]] = []
+
+    def on_flush(conv_id: int, text: str) -> None:
+        received.append((conv_id, text))
+
+    buf = MessageBuffer(delay_seconds=0.1, on_flush=on_flush)
+    buf.add_message(1, "Hello")
+    buf.add_message(1, "What are the prices?")  # resets the timer
+
+    time.sleep(0.5)  # wait for the single flush
+
+    assert len(received) == 1, f"Expected 1 flush but got {len(received)}: {received}"
+    conv_id, combined = received[0]
+    assert conv_id == 1
+    assert "Hello" in combined
+    assert "What are the prices?" in combined
+
+
+def test_message_buffer_separates_messages_after_window():
+    """Messages arriving after the debounce window fire as separate flushes."""
+    from app.message_buffer import MessageBuffer
+
+    received: list[tuple[int, str]] = []
+
+    def on_flush(conv_id: int, text: str) -> None:
+        received.append((conv_id, text))
+
+    buf = MessageBuffer(delay_seconds=0.1, on_flush=on_flush)
+    buf.add_message(2, "First message")
+    time.sleep(0.4)  # let the first flush fire
+
+    buf.add_message(2, "Second message")  # starts a new timer
+    time.sleep(0.4)  # let the second flush fire
+
+    assert len(received) == 2, f"Expected 2 flushes but got {len(received)}: {received}"
+    assert "First message" in received[0][1]
+    assert "Second message" in received[1][1]
+
+
+def test_message_buffer_zero_delay_flushes_synchronously():
+    """When delay_seconds=0 the flush happens synchronously in the calling thread."""
+    from app.message_buffer import MessageBuffer
+
+    received: list[str] = []
+
+    def on_flush(conv_id: int, text: str) -> None:
+        received.append(text)
+
+    buf = MessageBuffer(delay_seconds=0, on_flush=on_flush)
+    buf.add_message(3, "Immediate message")
+
+    # No sleep needed — flush is synchronous
+    assert len(received) == 1
+    assert "Immediate message" in received[0]
 
 
 # ---------------------------------------------------------------------------

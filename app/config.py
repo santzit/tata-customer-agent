@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Webhook
     webhook_token: str = ""
 
+    # Message buffer: seconds of silence before the agent replies.
+    # When messages arrive within this window they are batched into a single
+    # agent call; after the window expires with no new messages the reply is sent.
+    # Set RESPONSE_DELAY_SECONDS=0 to disable buffering (reply immediately).
+    response_delay_seconds: float = 120.0
+
     def make_openai_client(self):
         """Create an OpenAI client.
 

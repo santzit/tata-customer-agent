@@ -1,23 +1,23 @@
-# Nova Academy — Company Context
+# Nova Gym Academy — Company Context
 
 ## About Us
 
-Nova Academy is a modern educational institution founded in 2018, dedicated to empowering professionals and students with practical digital skills. We offer instructor-led and self-paced courses in software development, data science, UX design, and digital marketing. Our mission is to make high-quality education accessible and career-relevant.
+Nova Gym Academy is a modern fitness center founded in 2018, dedicated to helping people achieve their health and wellness goals. We offer a wide variety of group classes, personal training sessions, and specialized fitness programs for all levels — from complete beginners to seasoned athletes. Our mission is to make high-quality fitness accessible, motivating, and fun for everyone.
 
 ## Contact Information
 
 - **Phone:** +1 (555) 234-5678
 - **WhatsApp:** +1 (555) 234-5679
-- **Email:** support@nova-academy.com
-- **Website:** https://nova-academy.com
+- **Email:** support@nova-gym.com
+- **Website:** https://nova-gym.com
 
 ## Address
 
-Nova Academy Main Campus
+Nova Gym Academy Main Campus
 742 Evergreen Street, Suite 400
 Austin, TX 78701, USA
 
-We also operate a second campus at:
+We also operate a second location at:
 200 Innovation Drive, Floor 3
 San Francisco, CA 94107, USA
 
@@ -31,54 +31,51 @@ San Francisco, CA 94107, USA
 
 Online support (chat and email) is available 24/7. Live chat response time is under 2 minutes during business hours and under 4 hours outside business hours.
 
-## Courses and Activities
+## Activities and Classes
 
-### Software Development
-- Python Programming — Beginner, Intermediate, and Advanced levels
-- Web Development with React and Node.js
-- Mobile App Development (iOS with Swift / Android with Kotlin)
-- Backend Engineering with FastAPI and PostgreSQL
+### Group Fitness Classes
+- Yoga — Beginner, Intermediate, and Advanced levels
+- Pilates — mat and reformer sessions
+- CrossFit — functional high-intensity workouts
+- Cardio Dance (Zumba and aerobics)
+- Indoor Cycling (Spin classes)
+- HIIT (High-Intensity Interval Training)
 
-### Data Science & AI
-- Data Analysis with Python and Pandas
-- Machine Learning Fundamentals (scikit-learn)
-- Deep Learning with PyTorch
-- AI and Large Language Model (LLM) Practitioner
+### Strength and Conditioning
+- Weight Training — guided sessions on the gym floor
+- Functional Training — kettlebells, TRX, and resistance bands
+- Powerlifting and Olympic Lifting coaching
 
-### UX / UI Design
-- UX Research and Design Thinking
-- Figma for Product Teams
-- Accessibility and Inclusive Design
+### Aquatics
+- Swimming lessons — Beginner through Advanced
+- Aqua aerobics classes
 
-### Digital Marketing
-- Social Media Marketing Strategy
-- SEO and Content Marketing
-- Google Ads and Performance Marketing
+### Mind and Body
+- Meditation and mindfulness sessions
+- Stretching and mobility workshops
 
-All courses are available in two formats:
-- **Online self-paced** — available any time, lifetime access to recorded material
-- **In-person workshops** — held at our Austin campus, scheduled on weekends
+### Personal Training
+- One-on-one personal trainer sessions (available with Standard and Premium plans)
+- Nutrition and wellness coaching (Premium plan)
+
+### Trial Class
+New members are invited to attend a **free trial class** before committing to a membership. This is a great way to experience our facilities and meet our coaches. Book your free trial class through our website or WhatsApp.
 
 ## Membership Plans and Prices
 
-| Plan | Monthly Price | Annual Price (20% off) | Seats | Key Benefits |
-|---|---|---|---|---|
-| **Explorer** (Free) | $0 | $0 | 1 | 3 free courses, community forum access |
-| **Learner** | $49 | $470 | 1 | Unlimited online courses, monthly live Q&A session |
-| **Professional** | $99 | $950 | 1 | All Learner benefits + in-person workshops, 1-on-1 mentorship sessions |
-| **Team** | $299 | $2,870 | Up to 5 | All Professional benefits per seat, dedicated account manager |
+| Plan | Monthly Price | Annual Price (20% off) | Key Benefits |
+|---|---|---|---|
+| **Basic** | R$150 | R$1,440 | Unlimited group fitness classes, gym floor access |
+| **Standard** | R$250 | R$2,400 | All Basic benefits + 4 personal trainer sessions/month, aquatics access |
+| **Premium** | R$400 | R$3,840 | All Standard benefits + unlimited personal training, nutrition coaching, guest passes |
 
-All paid plans include a **7-day free trial**. You can upgrade, downgrade, or cancel at any time.
+All plans include a **free trial class** before signing up. You can upgrade, downgrade, or cancel at any time.
 
 ## Cancellation and Refund Policy
 
-- Subscriptions can be cancelled at any time from the account dashboard.
-- A **full refund** is available within **14 days** of the initial purchase, provided fewer than 3 lessons have been completed.
-- In-person workshop seats may be cancelled up to **72 hours** before the session for a full refund.
-
-## Certifications
-
-Every completed course awards a **digital certificate of completion**, shareable on LinkedIn. Certificates from Professional and Team plan members carry the **Nova Academy Partner Badge**, recognised by over 50 industry partners including major tech companies.
+- Memberships can be cancelled at any time from the member portal or by contacting our support team.
+- A **full refund** is available within **7 days** of the initial payment, provided fewer than 2 classes have been attended.
+- Personal training session bookings may be cancelled up to **24 hours** before the session for a full refund.
 
 ## Frequently Asked Questions
 
@@ -86,10 +83,13 @@ Every completed course awards a **digital certificate of completion**, shareable
 Yes, you can upgrade or downgrade at any time. Changes take effect at the start of the next billing cycle.
 
 **Is there a student discount?**
-Yes. Students with a valid academic email address receive 30% off the Learner and Professional plans.
+Yes. Students with a valid academic email address or student ID receive 20% off the Standard and Premium plans.
 
-**Are courses available in other languages?**
-Currently, courses are delivered in English. Portuguese and Spanish versions of selected courses are planned for Q3 2025.
+**Do you offer a free trial?**
+Yes! Every new member is welcome to attend one free trial class to experience our facilities and coaching before committing to a plan.
 
-**How do I enrol?**
-Visit https://nova-academy.com/enrol, choose your plan, and create an account. The Explorer plan requires no payment details.
+**What should I bring to my first class?**
+Bring comfortable workout clothes, a water bottle, and a towel. Lockers are available on-site. For yoga and pilates, mats are provided.
+
+**How do I sign up?**
+Visit https://nova-gym.com/join, choose your plan, and create an account. You can also contact us via WhatsApp at +1 (555) 234-5679 to book your free trial class directly.
