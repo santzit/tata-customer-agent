@@ -143,6 +143,16 @@ def _run_mocked(
     return agent_reply, openai_client, vector_store, memory
 
 
+def _print_reply(user_message: str, reply: str, turn: int | None = None) -> None:
+    """Print a formatted exchange so the agent reply is visible in pytest -s / CI output."""
+    label = f"Turn {turn}" if turn is not None else "Exchange"
+    sep = "-" * 60
+    print(f"\n{sep}")
+    print(f"[{label}] User : {user_message}")
+    print(f"[{label}] Agent: {reply}")
+    print(sep)
+
+
 def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
     """Return a minimal Chatwoot webhook payload for an incoming customer message."""
     return {
@@ -367,6 +377,86 @@ class TestMockedSimulations:
             assistant_reply="Our showrooms are open Monday-Saturday, 9 AM to 7 PM.",
         )
 
+    def test_three_turn_memory_context(self):
+        """3-turn conversation: agent retains plans/prices context across all turns.
+
+        Turn 1: "Hi"              → greeting
+        Turn 2: "What are the plans and prices" → agent retrieves and returns pricing info
+        Turn 3: "Hi"              → agent has full 2-turn history and may reference earlier topic
+        """
+        conversation_id = 102
+
+        pricing_snippets = [
+            "Nova Academy Membership Plans: Basic R$150/month, Standard R$250/month, Premium R$400/month.",
+            "All plans include access to group classes. Premium adds personal trainer sessions.",
+        ]
+
+        # Turn 1 -- greeting
+        reply_1, _, _, memory_1 = _run_mocked(
+            "Hi",
+            snippets=["Welcome to Nova Academy customer support."],
+            reply="Hello! How can I help you today?",
+            conversation_id=conversation_id,
+        )
+        assert reply_1 == "Hello! How can I help you today?"
+        memory_1.add_turn.assert_called_once_with(
+            conversation_id=conversation_id,
+            user_message="Hi",
+            assistant_reply="Hello! How can I help you today?",
+        )
+
+        # Turn 2 -- pricing question; history from turn 1 pre-loaded
+        history_after_1 = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello! How can I help you today?"},
+        ]
+        reply_2, openai_2, vector_2, memory_2 = _run_mocked(
+            "What are the plans and prices",
+            snippets=pricing_snippets,
+            reply="We offer Basic (R$150/month), Standard (R$250/month), and Premium (R$400/month) plans.",
+            conversation_id=conversation_id,
+            history=history_after_1,
+        )
+        assert "150" in reply_2 or "250" in reply_2 or "400" in reply_2 or "plans" in reply_2.lower()
+
+        # Verify that pricing snippets were forwarded to OpenAI (they appear in the last user message)
+        call_messages_2 = openai_2.chat.completions.create.call_args.kwargs["messages"]
+        # The last message is always the current user turn (with Knowledge context prepended)
+        last_user_msg = next(
+            m["content"] for m in reversed(call_messages_2) if m["role"] == "user"
+        )
+        assert "Basic" in last_user_msg or "150" in last_user_msg
+        memory_2.add_turn.assert_called_once()
+
+        # Turn 3 -- another greeting; 2-turn history is pre-loaded
+        history_after_2 = history_after_1 + [
+            {"role": "user", "content": "What are the plans and prices"},
+            {"role": "assistant", "content": reply_2},
+        ]
+        reply_3, openai_3, _, memory_3 = _run_mocked(
+            "Hi",
+            snippets=["Welcome to Nova Academy customer support."],
+            reply="Hi again! Is there anything else I can help you with regarding our plans?",
+            conversation_id=conversation_id,
+            history=history_after_2,
+        )
+        assert isinstance(reply_3, str) and len(reply_3) > 0
+
+        # All 4 prior messages (2 turns) must appear in the OpenAI call for turn 3
+        call_messages_3 = openai_3.chat.completions.create.call_args.kwargs["messages"]
+        assert call_messages_3[0]["role"] == "system"
+        # The history messages must include the plans/prices exchange
+        all_contents = " ".join(
+            m["content"] for m in call_messages_3 if m["role"] != "system"
+        )
+        assert "Hi" in all_contents
+        assert "plans" in all_contents.lower() or "prices" in all_contents.lower()
+        memory_3.add_turn.assert_called_once_with(
+            conversation_id=conversation_id,
+            user_message="Hi",
+            assistant_reply=reply_3,
+        )
+
 
 # ===========================================================================
 # SECTION 2 -- Live (skipped when OPENAI_API_KEY is not configured)
@@ -450,6 +540,7 @@ class TestLiveSimulations:
         mock_chatwoot.send_message.assert_called_once()
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("Hi there", reply)
 
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
@@ -471,6 +562,7 @@ class TestLiveSimulations:
         assert response.json()["status"] == "replied"
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("What is the academy address?", reply)
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What is the academy address?"}
@@ -491,6 +583,7 @@ class TestLiveSimulations:
         assert response.json()["status"] == "replied"
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("What are the opening hours?", reply)
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What are the opening hours?"}
@@ -511,6 +604,7 @@ class TestLiveSimulations:
         assert response.json()["status"] == "replied"
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("What courses does Nova Academy offer?", reply)
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What courses does Nova Academy offer?"}
@@ -531,6 +625,7 @@ class TestLiveSimulations:
         assert response.json()["status"] == "replied"
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("How much does a membership cost?", reply)
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "How much does a membership cost?"}
@@ -551,6 +646,7 @@ class TestLiveSimulations:
         assert response.json()["status"] == "replied"
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+        _print_reply("Can you book a table at a restaurant for me?", reply)
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "Can you book a table at a restaurant for me?"}
@@ -568,6 +664,7 @@ class TestLiveSimulations:
         assert response_1.json()["status"] == "replied"
         reply_1 = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply_1, str) and len(reply_1) > 0
+        _print_reply("Hi there", reply_1, turn=1)
 
         # Verify turn 1 is persisted to the real DB
         history_after_1 = memory.get_history(conversation_id=conv_id)
@@ -585,6 +682,7 @@ class TestLiveSimulations:
         assert response_2.json()["status"] == "replied"
         reply_2 = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply_2, str) and len(reply_2) > 0
+        _print_reply("What are your opening hours?", reply_2, turn=2)
 
         # Verify both turns are now persisted
         history_after_2 = memory.get_history(conversation_id=conv_id)
@@ -592,3 +690,62 @@ class TestLiveSimulations:
         assert history_after_2[0] == {"role": "user", "content": "Hi there"}
         assert history_after_2[2] == {"role": "user", "content": "What are your opening hours?"}
         assert history_after_2[3] == {"role": "assistant", "content": reply_2}
+
+    def test_three_turn_memory_context(self, live_infrastructure):
+        """Live: 3-turn memory test — plans/prices context is retained across all turns.
+
+        Turn 1: "Hi"                         → greeting
+        Turn 2: "What are the plans and prices" → agent retrieves and explains pricing
+        Turn 3: "Hi"                         → agent has the full 2-turn history from real DB
+        """
+        client, memory, mock_chatwoot = live_infrastructure
+        conv_id = 2008
+
+        # Turn 1 — greeting
+        mock_chatwoot.reset_mock()
+        response_1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        assert response_1.status_code == 200
+        assert response_1.json()["status"] == "replied"
+        reply_1 = mock_chatwoot.send_message.call_args.kwargs["message"]
+        assert isinstance(reply_1, str) and len(reply_1) > 0
+        _print_reply("Hi", reply_1, turn=1)
+
+        history_after_1 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_1) == 2
+        assert history_after_1[0] == {"role": "user", "content": "Hi"}
+        assert history_after_1[1] == {"role": "assistant", "content": reply_1}
+
+        # Turn 2 — plans and prices; agent loads turn-1 history from real DB
+        mock_chatwoot.reset_mock()
+        response_2 = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are the plans and prices", conv_id),
+        )
+        assert response_2.status_code == 200
+        assert response_2.json()["status"] == "replied"
+        reply_2 = mock_chatwoot.send_message.call_args.kwargs["message"]
+        assert isinstance(reply_2, str) and len(reply_2) > 0
+        _print_reply("What are the plans and prices", reply_2, turn=2)
+
+        history_after_2 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_2) == 4
+        assert history_after_2[0] == {"role": "user", "content": "Hi"}
+        assert history_after_2[2] == {"role": "user", "content": "What are the plans and prices"}
+        assert history_after_2[3] == {"role": "assistant", "content": reply_2}
+
+        # Turn 3 — greeting again; agent loads 2-turn history (4 messages) from real DB
+        mock_chatwoot.reset_mock()
+        response_3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        assert response_3.status_code == 200
+        assert response_3.json()["status"] == "replied"
+        reply_3 = mock_chatwoot.send_message.call_args.kwargs["message"]
+        assert isinstance(reply_3, str) and len(reply_3) > 0
+        _print_reply("Hi", reply_3, turn=3)
+
+        # All 3 turns are now in the DB (6 rows: 3 user + 3 assistant)
+        history_after_3 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_3) == 6
+        assert history_after_3[0] == {"role": "user", "content": "Hi"}
+        assert history_after_3[2] == {"role": "user", "content": "What are the plans and prices"}
+        assert history_after_3[4] == {"role": "user", "content": "Hi"}
+        assert history_after_3[5] == {"role": "assistant", "content": reply_3}

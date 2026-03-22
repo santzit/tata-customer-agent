@@ -50,7 +50,7 @@ jobs:
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
 
       - name: Run tests + OpenAI
-        run: pytest --tb=short -v -k "TestLiveSimulations"
+        run: pytest --tb=short -v -s -k "TestLiveSimulations"
         env:
           # GitHub Actions secret
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
