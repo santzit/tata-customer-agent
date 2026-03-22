@@ -44,11 +44,10 @@ jobs:
       - name: Run tests
         run: pytest --tb=short -v -k "not TestLiveSimulations"
         env:
-          # Real PostgreSQL/pgvector service (see services.postgres above)
+          # Real PostgreSQL/pgvector service (see services.postgres above).
+          # DB integration tests (ConversationMemory, PgVectorStore) run against
+          # this container; they skip gracefully when POSTGRES_DSN is not set.
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
-          # Note: CHATWOOT_API_TOKEN is intentionally omitted.
-          # The Chatwoot webhook trigger is simulated in tests by calling
-          # run_agent() directly -- no real Chatwoot instance is needed.
 
       - name: Run tests + OpenAI
         run: pytest --tb=short -v -k "TestLiveSimulations"

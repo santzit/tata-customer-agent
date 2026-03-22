@@ -15,8 +15,9 @@ Two-way approach
     - PostgreSQL/pgvector vector store — real DB, pre-populated from
       ``docs/company_context.md`` using real OpenAI embeddings
     - PostgreSQL conversation memory — real DB, turn persisted and verified
-    - Chatwoot — simulated by calling ``run_agent()`` directly; no live
-      Chatwoot instance or API token is required
+    - Chatwoot — simulated by POSTing Chatwoot-format JSON to the ``/webhook``
+      endpoint via FastAPI's ``TestClient``; the actual Chatwoot HTTP call is
+      captured by a ``MagicMock``.  No live Chatwoot instance is required.
 
 To run the live tests locally:
 
@@ -38,9 +39,10 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 from openai import OpenAI
 
 from app.agent import run_agent
@@ -139,6 +141,20 @@ def _run_mocked(
         openai_client=openai_client,
     )
     return agent_reply, openai_client, vector_store, memory
+
+
+def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
+    """Return a minimal Chatwoot webhook payload for an incoming customer message."""
+    return {
+        "event": "message_created",
+        "message": {
+            "id": 1,
+            "content": content,
+            "message_type": 0,  # 0 = incoming customer message
+            "conversation_id": conversation_id,
+        },
+        "conversation": {"id": conversation_id},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -358,18 +374,23 @@ class TestMockedSimulations:
 
 
 @pytest.fixture(scope="class")
-def live_infrastructure(pg_dsn, pg_test_vector_table, pg_test_memory_table):
+def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory_table):
     """Set up real services shared by all live simulation tests.
 
     - Builds a real OpenAI client (standard or Azure).
     - Creates a real PgVectorStore and populates it with every section from
       ``docs/company_context.md`` using real OpenAI embeddings.
-    - Provides a real ConversationMemory backed by the same PostgreSQL instance.
+    - Creates a real ConversationMemory backed by the same PostgreSQL instance.
+    - Provides a FastAPI TestClient with the real services injected and Chatwoot
+      simulated via a MagicMock — so each test POSTs to the real ``/webhook``
+      endpoint rather than calling ``run_agent()`` directly.
 
     Skipped automatically when ``OPENAI_API_KEY`` is absent or a placeholder
-    (the ``@requires_openai`` class decorator fires first).
+    (the ``@requires_openai`` class decorator fires first), or when PostgreSQL
+    is not reachable (``require_pg`` fires).
     """
     from app.conversation_memory import ConversationMemory
+    from app.main import app
     from app.pg_vector_store import PgVectorStore
 
     openai_client = _real_openai_client()
@@ -384,158 +405,185 @@ def live_infrastructure(pg_dsn, pg_test_vector_table, pg_test_memory_table):
         store.upsert(section_id, text, {"source": "company_context"})
 
     memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+    memory.ensure_table()
 
-    return store, memory, openai_client
+    mock_chatwoot = MagicMock()
+    mock_chatwoot.send_message.return_value = {"id": 99, "content": "mocked reply"}
+
+    # Inject real services and mock Chatwoot into the running app.
+    # Note: TestClient(app) is instantiated here but NOT entered as a context
+    # manager (i.e. not `with TestClient(app) as client:`).  This means the
+    # ASGI lifespan events do not run, so the module-level singletons patched
+    # above are not overwritten by the startup code in ``app/main.py``.
+    with (
+        patch("app.main._vector_store", store),
+        patch("app.main._conversation_memory", memory),
+        patch("app.main._chatwoot_client", mock_chatwoot),
+    ):
+        yield TestClient(app, raise_server_exceptions=True), memory, mock_chatwoot
 
 
 @requires_openai
 class TestLiveSimulations:
     """Full pipeline tests using real OpenAI, real pgvector, and real PostgreSQL memory.
 
-    Chatwoot is the only service that is *not* real: the incoming webhook
-    message is simulated by calling ``run_agent()`` directly, and no reply is
-    posted back to a Chatwoot conversation.  This is intentional — a live
-    Chatwoot instance is not available in CI.
+    Chatwoot is simulated: each test POSTs a Chatwoot-format JSON payload to the
+    real ``/webhook`` endpoint via FastAPI's ``TestClient``.  The full request
+    handling path in ``app/main.py`` is exercised — webhook parsing, agent
+    invocation, and the Chatwoot reply call — while the actual Chatwoot HTTP call
+    is captured by a ``MagicMock``.
 
-    Assertions verify structural correctness (non-empty reply, memory
-    persistence) rather than exact wording, since LLM output is
-    non-deterministic.
+    Assertions verify structural correctness (non-empty reply, memory persistence)
+    rather than exact wording, since LLM output is non-deterministic.
     """
 
     def test_greeting(self, live_infrastructure):
         """Live: agent greets the customer; turn is persisted to real memory."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2001
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="Hi there",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
-        )
+        response = client.post("/webhook", json=_make_webhook_payload("Hi there", conv_id))
 
+        assert response.status_code == 200
+        assert response.json() == {"status": "replied", "conversation_id": conv_id}
+        mock_chatwoot.send_message.assert_called_once()
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
+
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
-        assert history[0]["role"] == "user"
-        assert history[1]["role"] == "assistant"
-        assert history[1]["content"] == reply
+        assert history[0] == {"role": "user", "content": "Hi there"}
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_company_address(self, live_infrastructure):
         """Live: agent answers an address question using pgvector-retrieved context."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2002
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="What is the academy address?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        response = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What is the academy address?", conv_id),
         )
 
+        assert response.status_code == 200
+        assert response.json()["status"] == "replied"
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "What is the academy address?"}
+        assert history[1]["role"] == "assistant"
 
     def test_opening_hours(self, live_infrastructure):
         """Live: agent returns opening hours from pgvector-retrieved context."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2003
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="What are the opening hours?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        response = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are the opening hours?", conv_id),
         )
 
+        assert response.status_code == 200
+        assert response.json()["status"] == "replied"
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "What are the opening hours?"}
+        assert history[1]["role"] == "assistant"
 
     def test_courses_offered(self, live_infrastructure):
         """Live: agent lists available courses from pgvector-retrieved context."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2004
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="What courses does Nova Academy offer?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        response = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What courses does Nova Academy offer?", conv_id),
         )
 
+        assert response.status_code == 200
+        assert response.json()["status"] == "replied"
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "What courses does Nova Academy offer?"}
+        assert history[1]["role"] == "assistant"
 
     def test_pricing_plans(self, live_infrastructure):
         """Live: agent explains membership pricing from pgvector-retrieved context."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2005
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="How much does a membership cost?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        response = client.post(
+            "/webhook",
+            json=_make_webhook_payload("How much does a membership cost?", conv_id),
         )
 
+        assert response.status_code == 200
+        assert response.json()["status"] == "replied"
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "How much does a membership cost?"}
+        assert history[1]["role"] == "assistant"
 
     def test_unknown_topic_politely_declines(self, live_infrastructure):
         """Live: agent replies gracefully when the query is off-topic."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2006
+        mock_chatwoot.reset_mock()
 
-        reply = run_agent(
-            user_message="Can you book a table at a restaurant for me?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        response = client.post(
+            "/webhook",
+            json=_make_webhook_payload("Can you book a table at a restaurant for me?", conv_id),
         )
 
+        assert response.status_code == 200
+        assert response.json()["status"] == "replied"
+        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "Can you book a table at a restaurant for me?"}
+        assert history[1]["role"] == "assistant"
 
     def test_multi_turn_conversation(self, live_infrastructure):
         """Live: turn-1 history is stored in real memory and injected into turn 2."""
-        store, memory, openai_client = live_infrastructure
+        client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2007
 
         # Turn 1 — greeting
-        reply_1 = run_agent(
-            user_message="Hi there",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
-        )
+        mock_chatwoot.reset_mock()
+        response_1 = client.post("/webhook", json=_make_webhook_payload("Hi there", conv_id))
+        assert response_1.status_code == 200
+        assert response_1.json()["status"] == "replied"
+        reply_1 = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply_1, str) and len(reply_1) > 0
 
-        # Verify turn 1 is in the real DB
+        # Verify turn 1 is persisted to the real DB
         history_after_1 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_1) == 2
         assert history_after_1[0] == {"role": "user", "content": "Hi there"}
         assert history_after_1[1] == {"role": "assistant", "content": reply_1}
 
         # Turn 2 — follow-up; agent will load turn-1 history from real DB
-        reply_2 = run_agent(
-            user_message="What are your opening hours?",
-            vector_store=store,
-            conversation_memory=memory,
-            conversation_id=conv_id,
-            openai_client=openai_client,
+        mock_chatwoot.reset_mock()
+        response_2 = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are your opening hours?", conv_id),
         )
+        assert response_2.status_code == 200
+        assert response_2.json()["status"] == "replied"
+        reply_2 = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply_2, str) and len(reply_2) > 0
 
         # Verify both turns are now persisted
