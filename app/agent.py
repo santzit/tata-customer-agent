@@ -69,6 +69,17 @@ HUMAN_ESCALATION_MESSAGE = (
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Pattern that matches a simple greeting (and nothing else).
+_SIMPLE_GREETING_RE = re.compile(
+    r"^\s*(hi{1,3}|hello+|hey+|oi|good\s+(morning|afternoon|evening|day))\s*[!.,]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_simple_greeting(text: str) -> bool:
+    """Return True when *text* is a bare greeting with no additional content."""
+    return bool(_SIMPLE_GREETING_RE.match(text.strip()))
+
 
 def _split_messages(raw: str) -> list[str]:
     """Split a raw LLM response into individual message parts.
@@ -141,18 +152,33 @@ def generate_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
     context_text = "\n\n".join(
         doc.get("text", "") for doc in state.get("context_docs", [])
     )
+    history = state.get("history", [])
+
+    # When the customer sends a bare greeting but we already have conversation
+    # history, add an explicit in-message instruction so the LLM produces a
+    # brief contextual follow-up instead of a generic welcome.
+    greeting_with_history = _is_simple_greeting(state["user_message"]) and bool(history)
+    if greeting_with_history:
+        user_content = (
+            f"Knowledge context:\n{context_text}\n\n"
+            "IMPORTANT: The customer has sent a simple greeting, but you already have "
+            "an ongoing conversation with them (see the history above). "
+            "Do NOT give a full welcome message or list all services. "
+            "Reply with a SHORT, friendly greeting (one line) followed by ONE "
+            "contextual follow-up question or comment based on the last topic you "
+            "discussed — nothing more.\n\n"
+            f"Customer message: {state['user_message']}"
+        )
+    else:
+        user_content = (
+            f"Knowledge context:\n{context_text}\n\n"
+            f"User question: {state['user_message']}"
+        )
+
     # Build the messages array: system → history → current user message
     prompt_messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    prompt_messages.extend(state.get("history", []))
-    prompt_messages.append(
-        {
-            "role": "user",
-            "content": (
-                f"Knowledge context:\n{context_text}\n\n"
-                f"User question: {state['user_message']}"
-            ),
-        }
-    )
+    prompt_messages.extend(history)
+    prompt_messages.append({"role": "user", "content": user_content})
     completion = openai_client.chat.completions.create(
         model=settings.llm_model,
         messages=prompt_messages,

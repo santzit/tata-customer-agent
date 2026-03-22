@@ -6,6 +6,8 @@ tests run offline with no real API keys or database connections.
 
 from __future__ import annotations
 
+import time
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -80,15 +82,24 @@ def mock_chatwoot_client():
 
 @pytest.fixture()
 def test_client(mock_vector_store, mock_conversation_memory, mock_openai_client, mock_chatwoot_client):
-    """Build a FastAPI TestClient with all external services mocked."""
+    """Build a FastAPI TestClient with all external services mocked.
+
+    The :class:`~app.message_buffer.MessageBuffer` is initialised with
+    ``delay_seconds=0`` so it flushes synchronously in the calling thread —
+    making the tests deterministic without any ``time.sleep`` calls.
+    """
+    from app.main import _process_buffered_messages, app
+    from app.message_buffer import MessageBuffer
+
+    buffer = MessageBuffer(delay_seconds=0, on_flush=_process_buffered_messages)
+
     with (
         patch("app.main._vector_store", mock_vector_store),
         patch("app.main._conversation_memory", mock_conversation_memory),
         patch("app.main._chatwoot_client", mock_chatwoot_client),
+        patch("app.main._message_buffer", buffer),
         patch("app.agent.OpenAI", return_value=mock_openai_client),
     ):
-        from app.main import app
-
         # Patch run_agent so the whole flow is exercised but uses our mocks
         with patch(
             "app.main.run_agent",
@@ -167,7 +178,7 @@ def test_webhook_processes_incoming_message(
     response = test_client.post("/webhook", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "replied"
+    assert data["status"] == "queued"
     assert data["conversation_id"] == 42
     mock_chatwoot_client.send_message.assert_called_once()
     call_kwargs = mock_chatwoot_client.send_message.call_args

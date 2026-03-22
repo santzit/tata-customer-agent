@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -222,6 +223,15 @@ requires_openai = pytest.mark.skipif(
     not _key_is_real,
     reason="OPENAI_API_KEY is not configured -- skipping live tests",
 )
+
+# ---------------------------------------------------------------------------
+# Message-buffer timing constants used by webhook-level tests.
+# The production default is 120 s; tests use a tiny value so the suite stays
+# fast.  BUFFER_FLUSH_WAIT must be comfortably larger than _TEST_BUFFER_DELAY.
+# ---------------------------------------------------------------------------
+
+_TEST_BUFFER_DELAY: float = 0.05    # seconds — debounce window in tests
+_BUFFER_FLUSH_WAIT: float = _TEST_BUFFER_DELAY * 10  # generous margin for timer + thread scheduling
 
 
 # ===========================================================================
@@ -601,7 +611,141 @@ class TestMockedSimulations:
 
 
 # ===========================================================================
-# SECTION 2 -- Live (skipped when OPENAI_API_KEY is not configured)
+# SECTION 2 -- Message-buffer behaviour (mocked OpenAI, no API key required)
+# ===========================================================================
+
+
+@pytest.fixture
+def buffered_webhook_client():
+    """TestClient with mocked infrastructure and a short-delay MessageBuffer.
+
+    The buffer uses ``_TEST_BUFFER_DELAY`` so tests don't have to wait 2 minutes.
+    The OpenAI client is mocked with a deterministic reply, so no real API key
+    is needed.  This fixture is used by :class:`TestMessageBufferBehavior`.
+    """
+    from app.main import app
+    from app.message_buffer import MessageBuffer
+
+    mock_openai = _make_mock_openai_client("Buffer test reply")
+    vector_store = _make_vector_store(["Company info snippet"])
+    memory = _make_memory()
+
+    mock_chatwoot = MagicMock()
+    mock_chatwoot.send_message.return_value = {"id": 99, "content": "ok"}
+
+    # Use a self-contained flush function that injects the mock OpenAI client
+    # directly into run_agent, bypassing settings.make_openai_client().
+    def _test_flush(conversation_id: int, text: str) -> None:
+        parts = run_agent(
+            user_message=text,
+            vector_store=vector_store,
+            conversation_memory=memory,
+            conversation_id=conversation_id,
+            openai_client=mock_openai,
+        )
+        for part in parts:
+            mock_chatwoot.send_message(conversation_id=conversation_id, message=part)
+
+    buffer = MessageBuffer(
+        delay_seconds=_TEST_BUFFER_DELAY,
+        on_flush=_test_flush,
+    )
+
+    with (
+        patch("app.main._vector_store", vector_store),
+        patch("app.main._conversation_memory", memory),
+        patch("app.main._chatwoot_client", mock_chatwoot),
+        patch("app.main._message_buffer", buffer),
+    ):
+        yield TestClient(app, raise_server_exceptions=True), mock_chatwoot, memory
+
+
+class TestMessageBufferBehavior:
+    """Verify debounce / message-batching behaviour of the webhook endpoint.
+
+    These tests use mocked OpenAI so they always run without a real API key.
+    They exercise the full webhook → buffer → agent → Chatwoot path.
+    """
+
+    def test_webhook_returns_queued_status(self, buffered_webhook_client):
+        """Webhook returns 'queued' immediately; reply arrives after the delay."""
+        client, mock_chatwoot, _ = buffered_webhook_client
+        response = client.post("/webhook", json=_make_webhook_payload("Hello", 4001))
+        assert response.status_code == 200
+        assert response.json() == {"status": "queued", "conversation_id": 4001}
+        # Before the delay fires, Chatwoot should not have been called yet.
+        mock_chatwoot.send_message.assert_not_called()
+        # After the delay, Chatwoot receives the reply.
+        time.sleep(_BUFFER_FLUSH_WAIT)
+        mock_chatwoot.send_message.assert_called()
+
+    def test_messages_batched_within_window(self, buffered_webhook_client):
+        """Two messages arriving within the buffer window are batched together.
+
+        Simulates a customer typing two messages in quick succession (e.g. 'Hi'
+        and 'What are the opening hours?' within a 30-second window).  The agent
+        should be called once with both messages joined; memory records a single
+        combined turn.
+        """
+        client, mock_chatwoot, memory = buffered_webhook_client
+        conv_id = 4002
+
+        r1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        assert r1.json()["status"] == "queued"
+
+        # Second message arrives before the timer fires — resets the window.
+        r2 = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are the opening hours?", conv_id),
+        )
+        assert r2.json()["status"] == "queued"
+
+        # Wait for the (single) buffer flush.
+        time.sleep(_BUFFER_FLUSH_WAIT)
+
+        # Chatwoot called exactly once (one batched agent call produces one reply part).
+        chatwoot_calls = mock_chatwoot.send_message.call_args_list
+        assert len(chatwoot_calls) == 1
+
+        # Memory records ONE combined turn, not two separate turns.
+        add_turn_calls = memory.add_turn.call_args_list
+        assert len(add_turn_calls) == 1
+
+        saved_user_msg = add_turn_calls[0].kwargs.get(
+            "user_message",
+            add_turn_calls[0].args[1] if len(add_turn_calls[0].args) > 1 else "",
+        )
+        assert "Hi" in saved_user_msg
+        assert "What are the opening hours?" in saved_user_msg
+
+    def test_messages_separated_after_window(self, buffered_webhook_client):
+        """Messages arriving after the debounce window are processed separately.
+
+        Simulates a customer sending a first message, waiting (the agent replies),
+        then sending a second message later.  Each gets its own agent call and
+        its own memory turn.
+        """
+        client, mock_chatwoot, memory = buffered_webhook_client
+        conv_id = 4003
+
+        # First message → wait for flush.
+        client.post("/webhook", json=_make_webhook_payload("Hello", conv_id))
+        time.sleep(_BUFFER_FLUSH_WAIT)
+
+        # Second message arrives after the window has already closed.
+        client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are the prices?", conv_id),
+        )
+        time.sleep(_BUFFER_FLUSH_WAIT)
+
+        # Two separate agent calls → two memory turns.
+        add_turn_calls = memory.add_turn.call_args_list
+        assert len(add_turn_calls) == 2
+
+
+# ===========================================================================
+# SECTION 3 -- Live (skipped when OPENAI_API_KEY is not configured)
 # ===========================================================================
 
 
@@ -613,16 +757,17 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
     - Creates a real PgVectorStore and populates it with every section from
       ``docs/company_context.md`` using real OpenAI embeddings.
     - Creates a real ConversationMemory backed by the same PostgreSQL instance.
-    - Provides a FastAPI TestClient with the real services injected and Chatwoot
-      simulated via a MagicMock — so each test POSTs to the real ``/webhook``
-      endpoint rather than calling ``run_agent()`` directly.
+    - Provides a FastAPI TestClient with the real services injected, Chatwoot
+      simulated via a MagicMock, and the :class:`~app.message_buffer.MessageBuffer`
+      initialised with ``_TEST_BUFFER_DELAY`` so tests don't wait 2 minutes.
 
     Skipped automatically when ``OPENAI_API_KEY`` is absent or a placeholder
     (the ``@requires_openai`` class decorator fires first), or when PostgreSQL
     is not reachable (``require_pg`` fires).
     """
     from app.conversation_memory import ConversationMemory
-    from app.main import app
+    from app.main import _process_buffered_messages, app
+    from app.message_buffer import MessageBuffer
     from app.pg_vector_store import PgVectorStore
 
     openai_client = _real_openai_client()
@@ -642,6 +787,12 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
     mock_chatwoot = MagicMock()
     mock_chatwoot.send_message.return_value = {"id": 99, "content": "mocked reply"}
 
+    # Short-delay buffer so live tests don't wait the full 2 minutes.
+    buffer = MessageBuffer(
+        delay_seconds=_TEST_BUFFER_DELAY,
+        on_flush=_process_buffered_messages,
+    )
+
     # Inject real services and mock Chatwoot into the running app.
     # Note: TestClient(app) is instantiated here but NOT entered as a context
     # manager (i.e. not `with TestClient(app) as client:`).  This means the
@@ -651,6 +802,7 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
         patch("app.main._vector_store", store),
         patch("app.main._conversation_memory", memory),
         patch("app.main._chatwoot_client", mock_chatwoot),
+        patch("app.main._message_buffer", buffer),
     ):
         yield TestClient(app, raise_server_exceptions=True), memory, mock_chatwoot
 
@@ -661,12 +813,15 @@ class TestLiveSimulations:
 
     Chatwoot is simulated: each test POSTs a Chatwoot-format JSON payload to the
     real ``/webhook`` endpoint via FastAPI's ``TestClient``.  The full request
-    handling path in ``app/main.py`` is exercised — webhook parsing, agent
-    invocation, and the Chatwoot reply call — while the actual Chatwoot HTTP call
-    is captured by a ``MagicMock``.
+    handling path in ``app/main.py`` is exercised — webhook parsing, message
+    buffering (short delay), agent invocation, and the Chatwoot reply call — while
+    the actual Chatwoot HTTP call is captured by a ``MagicMock``.
 
     Each test verifies three things:
-    1. HTTP plumbing — the webhook returns 200 and ``status: "replied"``.
+    1. HTTP plumbing — the webhook returns 200 and ``status: "queued"``.  The
+       actual Chatwoot send happens from the buffer's background thread after
+       ``_TEST_BUFFER_DELAY`` seconds; tests call ``time.sleep(_BUFFER_FLUSH_WAIT)``
+       to let the flush complete before asserting on the mock.
     2. RAG correctness — the reply contains facts drawn from ``docs/company_context.md``
        (specific keywords that could only appear if the vector search returned the
        right documents).
@@ -681,9 +836,10 @@ class TestLiveSimulations:
         mock_chatwoot.reset_mock()
 
         response = client.post("/webhook", json=_make_webhook_payload("Hi there", conv_id))
+        time.sleep(_BUFFER_FLUSH_WAIT)  # wait for buffer to flush
 
         assert response.status_code == 200
-        assert response.json() == {"status": "replied", "conversation_id": conv_id}
+        assert response.json() == {"status": "queued", "conversation_id": conv_id}
         assert mock_chatwoot.send_message.called
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
@@ -717,9 +873,10 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("What is the gym address?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
 
         assert response.status_code == 200
-        assert response.json()["status"] == "replied"
+        assert response.json()["status"] == "queued"
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
         _print_reply("What is the gym address?", reply)
@@ -748,9 +905,10 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("What are the opening hours?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
 
         assert response.status_code == 200
-        assert response.json()["status"] == "replied"
+        assert response.json()["status"] == "queued"
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
         _print_reply("What are the opening hours?", reply)
@@ -779,9 +937,10 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("What classes does Nova Gym Academy offer?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
 
         assert response.status_code == 200
-        assert response.json()["status"] == "replied"
+        assert response.json()["status"] == "queued"
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
         _print_reply("What classes does Nova Gym Academy offer?", reply)
@@ -810,9 +969,10 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("How much does a membership cost?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
 
         assert response.status_code == 200
-        assert response.json()["status"] == "replied"
+        assert response.json()["status"] == "queued"
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
         _print_reply("How much does a membership cost?", reply)
@@ -841,9 +1001,10 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("Can you book a table at a restaurant for me?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
 
         assert response.status_code == 200
-        assert response.json()["status"] == "replied"
+        assert response.json()["status"] == "queued"
         reply = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply) > 0
         _print_reply("Can you book a table at a restaurant for me?", reply)
@@ -875,13 +1036,14 @@ class TestLiveSimulations:
         # Turn 1 — greeting
         mock_chatwoot.reset_mock()
         response_1 = client.post("/webhook", json=_make_webhook_payload("Hi there", conv_id))
+        time.sleep(_BUFFER_FLUSH_WAIT)
         assert response_1.status_code == 200
-        assert response_1.json()["status"] == "replied"
+        assert response_1.json()["status"] == "queued"
         reply_1 = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply_1) > 0
         _print_reply("Hi there", reply_1, turn=1)
 
-        # Turn-1 memory: persisted immediately.
+        # Turn-1 memory: persisted after buffer flush.
         history_after_1 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_1) == 2
         assert history_after_1[0] == {"role": "user", "content": "Hi there"}
@@ -893,8 +1055,9 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("What are your opening hours?", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
         assert response_2.status_code == 200
-        assert response_2.json()["status"] == "replied"
+        assert response_2.json()["status"] == "queued"
         reply_2 = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply_2) > 0
         _print_reply("What are your opening hours?", reply_2, turn=2)
@@ -927,8 +1090,9 @@ class TestLiveSimulations:
         # -- Turn 1: greeting --------------------------------------------------
         mock_chatwoot.reset_mock()
         response_1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        time.sleep(_BUFFER_FLUSH_WAIT)
         assert response_1.status_code == 200
-        assert response_1.json()["status"] == "replied"
+        assert response_1.json()["status"] == "queued"
         reply_1 = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply_1) > 0
         _print_reply("Hi", reply_1, turn=1)
@@ -951,8 +1115,9 @@ class TestLiveSimulations:
             "/webhook",
             json=_make_webhook_payload("What are the plans and prices", conv_id),
         )
+        time.sleep(_BUFFER_FLUSH_WAIT)
         assert response_2.status_code == 200
-        assert response_2.json()["status"] == "replied"
+        assert response_2.json()["status"] == "queued"
         reply_2 = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply_2) > 0
         _print_reply("What are the plans and prices", reply_2, turn=2)
@@ -975,8 +1140,9 @@ class TestLiveSimulations:
         # -- Turn 3: second greeting with full history in DB -------------------
         mock_chatwoot.reset_mock()
         response_3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        time.sleep(_BUFFER_FLUSH_WAIT)
         assert response_3.status_code == 200
-        assert response_3.json()["status"] == "replied"
+        assert response_3.json()["status"] == "queued"
         reply_3 = _collect_chatwoot_reply(mock_chatwoot)
         assert len(reply_3) > 0
         _print_reply("Hi", reply_3, turn=3)
@@ -987,11 +1153,16 @@ class TestLiveSimulations:
         assert "context does not" not in reply_3_lower and "context doesn't" not in reply_3_lower, (
             f"Turn 3 reply suggests RAG or memory context was empty: {reply_3!r}"
         )
-        # Should include a greeting and a contextual follow-up referencing the prior topic.
+        # Should include a brief greeting + contextual follow-up (not a generic welcome).
         assert any(
             kw in reply_3_lower
-            for kw in ("hello", "hi", "hey", "help", "anything", "more", "plan", "visit", "interested", "would you")
+            for kw in ("hello", "hi", "hey", "help", "anything", "more", "plan", "visit", "interested", "would you", "sign")
         ), f"Turn 3 greeting reply does not seem contextually aware: {reply_3!r}"
+        # Turn 3 must NOT be a generic welcome that ignores the conversation history.
+        assert "welcome to" not in reply_3_lower or any(
+            kw in reply_3_lower
+            for kw in ("plan", "visit", "interested", "would you", "sign", "anything")
+        ), f"Turn 3 reply looks like a fresh welcome, ignoring conversation history: {reply_3!r}"
 
         # All 3 turns persisted — 6 rows in the DB.
         history_after_3 = memory.get_history(conversation_id=conv_id)
@@ -1002,3 +1173,80 @@ class TestLiveSimulations:
         assert history_after_3[3] == {"role": "assistant", "content": reply_2}
         assert history_after_3[4] == {"role": "user", "content": "Hi"}
         assert history_after_3[5] == {"role": "assistant", "content": reply_3}
+
+    def test_message_batching_simulation(self, live_infrastructure):
+        """Live: two rapid messages are batched; a later message is processed separately.
+
+        Simulates the scenario described in the issue:
+          - Message 1 at t=0      (customer types 'Hi')
+          - Message 2 at t≈30s    (customer immediately adds a question)
+          Both arrive within the debounce window → processed together as one turn.
+
+          - Message 3 at t≈3min   (customer comes back after a pause)
+          Arrives after the window closes → processed as a separate turn.
+
+        In the test, 1 minute is represented by ``_TEST_BUFFER_DELAY`` (0.05 s).
+        """
+        client, memory, mock_chatwoot = live_infrastructure
+        conv_id = 2009
+
+        # -- Messages 1+2: arrive within the buffer window (simulated 30s apart) --
+        mock_chatwoot.reset_mock()
+        r1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+        assert r1.json()["status"] == "queued"
+
+        # Simulate 30-second gap within the 2-minute window (half the delay).
+        time.sleep(_TEST_BUFFER_DELAY / 2)
+
+        r2 = client.post(
+            "/webhook",
+            json=_make_webhook_payload("What are the membership plans?", conv_id),
+        )
+        assert r2.json()["status"] == "queued"
+
+        # Wait for the single combined flush.
+        time.sleep(_BUFFER_FLUSH_WAIT)
+
+        assert mock_chatwoot.send_message.called
+        reply_batch = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_batch) > 0
+        _print_reply("Hi + What are the membership plans?", reply_batch, turn=1)
+
+        # Combined turn: the agent received both messages; memory has 1 turn.
+        history_after_batch = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_batch) == 2, (
+            f"Expected 1 combined turn (2 rows) after batching, got {len(history_after_batch)}: "
+            f"{history_after_batch}"
+        )
+        # The combined user message contains both inputs joined by a newline.
+        assert "Hi" in history_after_batch[0]["content"]
+        assert "plans" in history_after_batch[0]["content"].lower()
+
+        # The response should mention pricing (RAG on combined query).
+        reply_batch_lower = reply_batch.lower()
+        assert any(
+            kw in reply_batch_lower
+            for kw in ("basic", "standard", "premium", "plan", "r$", "150", "250", "400", "price", "membership")
+        ), f"Batched reply does not mention pricing info: {reply_batch!r}"
+
+        # -- Message 3: arrives after the window closes (simulated 3+ minutes) --
+        mock_chatwoot.reset_mock()
+        r3 = client.post(
+            "/webhook",
+            json=_make_webhook_payload("Can I book a free trial class?", conv_id),
+        )
+        assert r3.json()["status"] == "queued"
+        time.sleep(_BUFFER_FLUSH_WAIT)
+
+        assert mock_chatwoot.send_message.called
+        reply_3 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_3) > 0
+        _print_reply("Can I book a free trial class?", reply_3, turn=2)
+
+        # Separate turn — memory now has 4 rows (2 per turn).
+        history_after_3 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_3) == 4, (
+            f"Expected 2 turns (4 rows) after message 3, got {len(history_after_3)}: "
+            f"{history_after_3}"
+        )
+        assert history_after_3[2]["content"] == "Can I book a free trial class?"

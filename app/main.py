@@ -10,6 +10,7 @@ from app.agent import run_agent
 from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
+from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
 logging.basicConfig(level=logging.INFO)
@@ -22,14 +23,62 @@ logger = logging.getLogger(__name__)
 _vector_store: PgVectorStore | None = None
 _conversation_memory: ConversationMemory | None = None
 _chatwoot_client: ChatwootClient | None = None
+_message_buffer: MessageBuffer | None = None
+
+
+# ---------------------------------------------------------------------------
+# Background processing (called from the timer thread by MessageBuffer)
+# ---------------------------------------------------------------------------
+
+
+def _process_buffered_messages(conversation_id: int, combined_text: str) -> None:
+    """Process all accumulated messages for *conversation_id* and reply via Chatwoot.
+
+    This function runs in the :class:`~app.message_buffer.MessageBuffer` timer
+    thread after the debounce window expires.  It calls the LangGraph agent with
+    the combined text and delivers each reply part to Chatwoot.
+    """
+    logger.info(
+        "Processing buffered messages for conversation %d (%d chars)",
+        conversation_id,
+        len(combined_text),
+    )
+    try:
+        reply_parts = run_agent(
+            user_message=combined_text,
+            vector_store=_vector_store,
+            conversation_memory=_conversation_memory,
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Agent error for conversation %d: %s", conversation_id, exc
+        )
+        return
+
+    try:
+        for part in reply_parts:
+            _chatwoot_client.send_message(
+                conversation_id=conversation_id, message=part
+            )
+    except Exception as exc:
+        logger.exception(
+            "Failed to send reply to Chatwoot for conversation %d: %s",
+            conversation_id,
+            exc,
+        )
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global _vector_store, _conversation_memory, _chatwoot_client
+    global _vector_store, _conversation_memory, _chatwoot_client, _message_buffer
     _vector_store = PgVectorStore()
     _conversation_memory = ConversationMemory()
     _chatwoot_client = ChatwootClient()
+    _message_buffer = MessageBuffer(
+        delay_seconds=settings.response_delay_seconds,
+        on_flush=_process_buffered_messages,
+    )
     for store in (_vector_store, _conversation_memory):
         try:
             store.ensure_collection()
@@ -82,14 +131,18 @@ async def chatwoot_webhook(
     request: Request,
     x_chatwoot_signature: str | None = Header(default=None, alias="X-Chatwoot-Signature"),
 ) -> dict:
-    """Receive Chatwoot webhook events and reply with AI-generated responses.
+    """Receive Chatwoot webhook events and queue an AI-generated reply.
 
     The endpoint:
 
     1. Validates an optional webhook token.
     2. Ignores events that are not new incoming customer messages.
-    3. Runs the LangGraph RAG agent to generate a reply.
-    4. Posts the reply back to Chatwoot.
+    3. Adds the message to the per-conversation :class:`~app.message_buffer.MessageBuffer`.
+       Messages arriving within the debounce window (``RESPONSE_DELAY_SECONDS``,
+       default 120 s) are batched together and processed as a single agent call once
+       the window expires.
+    4. Returns ``{"status": "queued"}`` immediately; the Chatwoot reply is sent
+       from the buffer's background timer thread after the silence window closes.
     """
     _verify_webhook_token(x_chatwoot_signature)
 
@@ -105,30 +158,13 @@ async def chatwoot_webhook(
     if not user_text or not conversation_id:
         return {"status": "ignored", "reason": "empty message or missing conversation_id"}
 
-    logger.info("Processing message for conversation %d: %s", conversation_id, user_text[:80])
+    logger.info(
+        "Queuing message for conversation %d (delay=%.0fs): %s",
+        conversation_id,
+        settings.response_delay_seconds,
+        user_text[:80],
+    )
 
-    try:
-        reply_parts = run_agent(
-            user_message=user_text,
-            vector_store=_vector_store,
-            conversation_memory=_conversation_memory,
-            conversation_id=conversation_id,
-        )
-    except Exception as exc:
-        logger.exception("Agent error: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Agent failed to generate a response",
-        ) from exc
+    _message_buffer.add_message(conversation_id, user_text)
 
-    try:
-        for part in reply_parts:
-            _chatwoot_client.send_message(conversation_id=conversation_id, message=part)
-    except Exception as exc:
-        logger.exception("Failed to send reply to Chatwoot: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not send reply to Chatwoot",
-        ) from exc
-
-    return {"status": "replied", "conversation_id": conversation_id}
+    return {"status": "queued", "conversation_id": conversation_id}
