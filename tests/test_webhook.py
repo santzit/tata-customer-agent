@@ -409,11 +409,12 @@ def test_pg_vector_store_upsert_and_search(
     The OpenAI embedding client is injected as a mock so this test exercises
     the real pgvector SQL round-trip without requiring a live API key.
     """
-    from app.pg_vector_store import PgVectorStore, _VECTOR_SIZE
+    from app.pg_vector_store import PgVectorStore
+    from app.config import settings
 
     mock_openai = MagicMock()
     mock_openai.embeddings.create.return_value = MagicMock(
-        data=[MagicMock(embedding=[0.1] * _VECTOR_SIZE)]
+        data=[MagicMock(embedding=[0.1] * settings.embedding_dimension)]
     )
 
     store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai)
