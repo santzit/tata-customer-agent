@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock
 
 import psycopg2
 import pytest
@@ -18,6 +17,8 @@ _PG_DSN = os.environ.get(
 # never interfere with a live deployment sharing the same database.
 _TEST_VECTOR_TABLE = "tata_knowledge_test"
 _TEST_MEMORY_TABLE = "tata_conversations_test"
+
+_KNOWN_DUMMY_KEYS = {"sk-test-dummy", "sk-placeholder", ""}
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,18 @@ def require_pg(pg_dsn: str) -> None:
         pytest.skip(f"PostgreSQL not reachable: {exc}")
 
 
+@pytest.fixture(scope="session")
+def require_openai() -> None:
+    """Skip any test that declares this fixture when OPENAI_API_KEY is not set.
+
+    In CI the secret is always configured.  During local development without
+    an API key, OpenAI-dependent tests skip gracefully instead of failing.
+    """
+    key = os.environ.get("OPENAI_API_KEY", "")
+    if key in _KNOWN_DUMMY_KEYS:
+        pytest.skip("OPENAI_API_KEY is not configured -- skipping OpenAI tests")
+
+
 # ---------------------------------------------------------------------------
 # Schema bootstrap (runs once per session, before any test)
 # ---------------------------------------------------------------------------
@@ -88,8 +101,7 @@ def ensure_pg_schema(
     from app.pg_vector_store import PgVectorStore
 
     # ensure_table() only runs DDL — no OpenAI embedding call is made.
-    mock_openai = MagicMock()
-    PgVectorStore(
-        dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai
-    ).ensure_table()
+    # Pass a dummy DSN-only store to bootstrap the tables; the real stores
+    # created per-test will use a real OpenAI client for embedding calls.
+    PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table).ensure_table()
     ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()

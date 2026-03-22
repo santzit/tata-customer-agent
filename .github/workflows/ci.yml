@@ -41,24 +41,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: pytest --tb=short -v -k "not TestLiveSimulations"
+      - name: Run all tests
+        run: pytest --tb=short -v -s
         env:
           # Real PostgreSQL/pgvector service (see services.postgres above).
-          # DB integration tests (ConversationMemory, PgVectorStore) run against
-          # this container; they skip gracefully when POSTGRES_DSN is not set.
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
-
-      - name: Run tests + OpenAI
-        run: pytest --tb=short -v -s -k "TestLiveSimulations"
-        env:
-          # GitHub Actions secret
+          # Real OpenAI credentials (GitHub Actions secrets / variables).
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # GitHub Actions variables (set in repository Settings → Variables)
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           OPENAI_API_ENDPOINT: ${{ vars.OPENAI_API_ENDPOINT }}
           EMBEDDING_MODEL_SMALL: ${{ vars.EMBEDDING_MODEL_SMALL }}
           EMBEDDING_MODEL_LARGE: ${{ vars.EMBEDDING_MODEL_LARGE }}
-          # Real PostgreSQL/pgvector service (see services.postgres above)
-          POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
