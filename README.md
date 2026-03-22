@@ -41,13 +41,10 @@ Chatwoot ──webhook──▶ FastAPI /webhook
 # 1. Copy and fill in your credentials
 cp .env.example .env
 
-# 2. Install git pre-commit hook (runs tests before every commit)
-make install-hooks
-
-# 3. Start PostgreSQL + Tata agent
+# 2. Start PostgreSQL + Tata agent
 docker compose up --build
 
-# 4. Expose the webhook with ngrok (development)
+# 3. Expose the webhook with ngrok (development)
 ngrok http 8000
 # Then set the ngrok URL as the webhook in your Chatwoot inbox settings:
 # https://<ngrok-id>.ngrok.io/webhook
@@ -58,17 +55,16 @@ ngrok http 8000
 ```bash
 pip install -r requirements.txt
 
-# Run all tests (OpenAI tests skip gracefully without OPENAI_API_KEY)
-make test
-
-# Or directly:
+# Run the full test suite (requires OPENAI_API_KEY and PostgreSQL with pgvector)
 POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/tata_agent \
+OPENAI_API_KEY=sk-... \
 pytest --tb=short -v -s
 ```
 
-Tests are split into two groups:
-- **Always run** (no external services): MessageBuffer unit tests, Chatwoot HTTP client tests, webhook routing tests.
-- **Skip without OpenAI key** (`OPENAI_API_KEY`): full agent pipeline, pgvector RAG, supervisor review, live simulation tests.  These all run in CI where the secret is configured.
+Tests use **real services** (OpenAI + PostgreSQL/pgvector).  Only the outbound
+Chatwoot HTTP client is replaced by a `MagicMock`.  Missing `OPENAI_API_KEY`
+causes tests to **fail** (not skip), giving a clear error.  Put your credentials
+in a `.env` file — it is loaded automatically by the test suite.
 
 ## Environment variables
 
