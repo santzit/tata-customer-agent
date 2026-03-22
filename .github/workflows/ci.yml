@@ -29,7 +29,9 @@ jobs:
       - name: Run tests
         run: pytest --tb=short -v
         env:
-          # Dummy values — all external services are mocked in the tests
-          OPENAI_API_KEY: "sk-test-dummy"
+          # Real key used by test_message_simulations.py (live OpenAI calls).
+          # Tests in that file are skipped automatically when the secret is absent.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Dummy values for services that are mocked in all other tests
           CHATWOOT_API_TOKEN: "test-token"
           QDRANT_URL: "http://localhost:6333"
