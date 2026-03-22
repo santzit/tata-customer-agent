@@ -36,6 +36,8 @@ jobs:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           OPENAI_API_ENDPOINT: ${{ vars.OPENAI_API_ENDPOINT }}
           EMBEDDING_MODEL_SMALL: ${{ vars.EMBEDDING_MODEL_SMALL }}
-          # Dummy values for services that are mocked in all other tests
-          CHATWOOT_API_TOKEN: "test-token"
+          # PostgreSQL is mocked in all tests; DSN is a dummy placeholder
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
+          # Note: CHATWOOT_API_TOKEN is intentionally omitted.
+          # The Chatwoot webhook trigger is simulated in tests by calling
+          # run_agent() directly -- no real Chatwoot instance is needed.

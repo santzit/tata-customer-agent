@@ -9,10 +9,11 @@ Two-way approach
     OpenAI prompt, the reply is returned, and the turn is persisted to memory.
 
 **Section 2 -- Live OpenAI** (skipped when OPENAI_API_KEY is absent or a dummy)
-    Makes real calls to the OpenAI API using the configured key.  PostgreSQL
-    and Chatwoot are still mocked because they are infrastructure services.
-    These tests verify that the agent produces a sensible, non-empty reply for
-    each realistic customer scenario when wired to the actual model.
+    Makes real calls to the OpenAI API using the configured key.  The Chatwoot
+    webhook trigger is simulated by calling ``run_agent()`` directly — no real
+    Chatwoot instance is required.  The PostgreSQL vector store and conversation
+    memory are mocked; snippets are loaded from ``docs/company_context.md`` so
+    the agent reasons about realistic company knowledge.
 
 To run the live tests locally:
 
@@ -26,12 +27,36 @@ For Azure OpenAI, also set OPENAI_API_ENDPOINT:
 from __future__ import annotations
 
 import os
+import pathlib
+import re
 from unittest.mock import MagicMock
 
 import pytest
 from openai import OpenAI
 
 from app.agent import run_agent
+
+# ---------------------------------------------------------------------------
+# Docs helpers
+# ---------------------------------------------------------------------------
+
+_DOCS_DIR = pathlib.Path(__file__).parent.parent / "docs"
+
+
+def _load_doc_section(heading: str) -> str:
+    """Return the body text of a ``##``-level section from company_context.md.
+
+    Args:
+        heading: The exact section heading text (without ``## ``), e.g.
+            ``"Address"`` or ``"Opening Hours"``.
+
+    Returns:
+        The section body as a single string, or an empty string if not found.
+    """
+    content = (_DOCS_DIR / "company_context.md").read_text(encoding="utf-8")
+    pattern = rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)"
+    match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
+    return match.group(1).strip() if match else ""
 
 
 # ---------------------------------------------------------------------------
@@ -349,17 +374,22 @@ class TestMockedSimulations:
 class TestLiveSimulations:
     """Full pipeline tests that make real calls to the OpenAI API.
 
-    PostgreSQL and Chatwoot are still mocked -- only OpenAI is live.
+    The Chatwoot webhook trigger is simulated by calling ``run_agent()``
+    directly — no real Chatwoot instance or API token is required.
+    The PostgreSQL vector store and conversation memory are mocked; context
+    snippets come from ``docs/company_context.md`` so the agent reasons about
+    realistic academy knowledge rather than hard-coded strings.
+
     Assertions check structural correctness (non-empty reply, correct calls)
     rather than exact wording, since LLM output is non-deterministic.
     """
 
     def test_greeting(self):
-        """Live: agent produces a non-empty greeting."""
+        """Live: agent produces a non-empty greeting for Nova Academy."""
         user_message = "Hi there"
         snippets = [
-            "Tata Motors customer support is available 24/7 via phone and chat.",
-            "You can reach us at support@tatamotors.com or call 1800-209-7979.",
+            _load_doc_section("About Us"),
+            _load_doc_section("Contact Information"),
         ]
 
         reply, vector_store, memory = _run_live(user_message, snippets=snippets)
@@ -371,14 +401,11 @@ class TestLiveSimulations:
         )
 
     def test_company_address(self):
-        """Live: agent responds to a company address question."""
-        user_message = "What is the company address?"
+        """Live: agent responds to a company address question using docs context."""
+        user_message = "What is the academy address?"
         snippets = [
-            (
-                "Tata Motors Limited registered office: Bombay House, 24 Homi Mody Street, "
-                "Mumbai, Maharashtra 400001, India."
-            ),
-            "For visit-related enquiries please call the reception at +91 22 6665 8282.",
+            _load_doc_section("Address"),
+            _load_doc_section("Contact Information"),
         ]
 
         reply, vector_store, memory = _run_live(user_message, snippets=snippets)
@@ -388,12 +415,9 @@ class TestLiveSimulations:
         memory.add_turn.assert_called_once()
 
     def test_opening_hours(self):
-        """Live: agent returns showroom opening hours."""
-        user_message = "What are the opening hours of the showroom?"
-        snippets = [
-            "Tata Motors showrooms are open Monday-Saturday 09:00-19:00 IST.",
-            "Sunday hours: 10:00-17:00 IST. Public holidays may vary.",
-        ]
+        """Live: agent returns opening hours from docs context."""
+        user_message = "What are the opening hours?"
+        snippets = [_load_doc_section("Opening Hours")]
 
         reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
@@ -401,13 +425,10 @@ class TestLiveSimulations:
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
-    def test_vehicle_lineup(self):
-        """Live: agent lists available Tata vehicles."""
-        user_message = "What cars does Tata offer?"
-        snippets = [
-            "Tata Motors passenger vehicles: Nexon, Harrier, Safari, Punch, Tiago, Altroz.",
-            "Electric vehicles: Nexon EV, Tiago EV, Punch EV -- available at select dealerships.",
-        ]
+    def test_courses_offered(self):
+        """Live: agent lists available courses from docs context."""
+        user_message = "What courses does Nova Academy offer?"
+        snippets = [_load_doc_section("Courses and Activities")]
 
         reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
@@ -415,13 +436,10 @@ class TestLiveSimulations:
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
-    def test_warranty_inquiry(self):
-        """Live: agent explains the warranty policy."""
-        user_message = "What is the warranty on Tata vehicles?"
-        snippets = [
-            "Standard warranty: 3 years or 100,000 km, whichever is earlier.",
-            "Extended warranty options: up to 5 years. Contact your nearest dealer.",
-        ]
+    def test_pricing_plans(self):
+        """Live: agent explains pricing plans from docs context."""
+        user_message = "How much does a membership cost?"
+        snippets = [_load_doc_section("Membership Plans and Prices")]
 
         reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
@@ -444,10 +462,10 @@ class TestLiveSimulations:
         """Live: turn-1 history is injected and turn-2 produces a valid reply."""
         conversation_id = 201
 
-        # Turn 1
+        # Turn 1 — greeting
         reply_1, vector_store_1, memory_1 = _run_live(
             "Hi there",
-            snippets=["Customer support available 24/7."],
+            snippets=[_load_doc_section("About Us")],
             conversation_id=conversation_id,
         )
         assert isinstance(reply_1, str) and len(reply_1) > 0
@@ -457,14 +475,14 @@ class TestLiveSimulations:
             assistant_reply=reply_1,
         )
 
-        # Turn 2 -- simulate memory returning turn-1 history
+        # Turn 2 — follow-up with history injected (simulating memory retrieval)
         history = [
             {"role": "user", "content": "Hi there"},
             {"role": "assistant", "content": reply_1},
         ]
         reply_2, vector_store_2, memory_2 = _run_live(
             "What are your opening hours?",
-            snippets=["Showrooms open Mon-Sat 09:00-19:00."],
+            snippets=[_load_doc_section("Opening Hours")],
             conversation_id=conversation_id,
             history=history,
         )
