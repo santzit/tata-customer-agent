@@ -1,12 +1,12 @@
 """CI tests that simulate Chatwoot webhook messages sent to the Tata agent.
 
-All external dependencies (OpenAI, Qdrant, Chatwoot) are mocked so the tests
-run offline with no real API keys.
+All external dependencies (OpenAI, PostgreSQL, Chatwoot) are mocked so the
+tests run offline with no real API keys or database connections.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,8 +39,8 @@ def _make_chatwoot_payload(
 
 
 @pytest.fixture()
-def mock_qdrant_store():
-    """Return a mock QdrantStore that always returns two knowledge snippets."""
+def mock_vector_store():
+    """Return a mock PgVectorStore that always returns two knowledge snippets."""
     store = MagicMock()
     store.search.return_value = [
         {"text": "Tata Motors offers a 3-year warranty on all vehicles."},
@@ -79,10 +79,10 @@ def mock_chatwoot_client():
 
 
 @pytest.fixture()
-def test_client(mock_qdrant_store, mock_conversation_memory, mock_openai_client, mock_chatwoot_client):
+def test_client(mock_vector_store, mock_conversation_memory, mock_openai_client, mock_chatwoot_client):
     """Build a FastAPI TestClient with all external services mocked."""
     with (
-        patch("app.main._qdrant_store", mock_qdrant_store),
+        patch("app.main._vector_store", mock_vector_store),
         patch("app.main._conversation_memory", mock_conversation_memory),
         patch("app.main._chatwoot_client", mock_chatwoot_client),
         patch("app.agent.OpenAI", return_value=mock_openai_client),
@@ -92,7 +92,7 @@ def test_client(mock_qdrant_store, mock_conversation_memory, mock_openai_client,
         # Patch run_agent so the whole flow is exercised but uses our mocks
         with patch(
             "app.main.run_agent",
-            side_effect=lambda user_message, qdrant_store, conversation_memory, conversation_id=0, **kw: (
+            side_effect=lambda user_message, vector_store, conversation_memory, conversation_id=0, **kw: (
                 mock_openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": user_message}],
@@ -115,7 +115,7 @@ def test_health_check(test_client):
 
 
 # ---------------------------------------------------------------------------
-# Webhook — ignored events
+# Webhook -- ignored events
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +152,7 @@ def test_webhook_ignores_empty_content(test_client):
 
 
 # ---------------------------------------------------------------------------
-# Webhook — happy path
+# Webhook -- happy path
 # ---------------------------------------------------------------------------
 
 
@@ -192,7 +192,7 @@ def test_webhook_processes_different_conversations(
 
 
 # ---------------------------------------------------------------------------
-# Webhook — token validation
+# Webhook -- token validation
 # ---------------------------------------------------------------------------
 
 
@@ -229,38 +229,38 @@ def test_webhook_accepts_valid_token(test_client, mock_chatwoot_client):
 # ---------------------------------------------------------------------------
 
 
-def test_agent_run_agent_calls_qdrant_and_openai(
-    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+def test_agent_run_agent_calls_vector_store_and_openai(
+    mock_vector_store, mock_conversation_memory, mock_openai_client
 ):
-    """run_agent should query Qdrant then call OpenAI and return a string."""
+    """run_agent should query the vector store then call OpenAI and return a string."""
     from app.agent import run_agent
 
     with patch("app.agent.OpenAI", return_value=mock_openai_client):
         reply = run_agent(
             user_message="Tell me about warranty",
-            qdrant_store=mock_qdrant_store,
+            vector_store=mock_vector_store,
             conversation_memory=mock_conversation_memory,
             conversation_id=42,
             openai_client=mock_openai_client,
         )
 
-    mock_qdrant_store.search.assert_called_once_with("Tell me about warranty")
+    mock_vector_store.search.assert_called_once_with("Tell me about warranty")
     assert isinstance(reply, str)
     assert len(reply) > 0
 
 
 def test_agent_uses_retrieved_context(
-    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+    mock_vector_store, mock_conversation_memory, mock_openai_client
 ):
-    """The context from Qdrant must be forwarded to the OpenAI call."""
+    """The context from the vector store must be forwarded to the OpenAI call."""
     from app.agent import run_agent
 
-    mock_qdrant_store.search.return_value = [{"text": "Tata Nexon has a 5-star safety rating."}]
+    mock_vector_store.search.return_value = [{"text": "Tata Nexon has a 5-star safety rating."}]
 
     with patch("app.agent.OpenAI", return_value=mock_openai_client):
         run_agent(
             user_message="Is Tata Nexon safe?",
-            qdrant_store=mock_qdrant_store,
+            vector_store=mock_vector_store,
             conversation_memory=mock_conversation_memory,
             conversation_id=42,
             openai_client=mock_openai_client,
@@ -273,7 +273,7 @@ def test_agent_uses_retrieved_context(
 
 
 def test_agent_includes_history_in_prompt(
-    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+    mock_vector_store, mock_conversation_memory, mock_openai_client
 ):
     """Previous conversation turns must appear in the OpenAI messages array."""
     from app.agent import run_agent
@@ -286,7 +286,7 @@ def test_agent_includes_history_in_prompt(
     with patch("app.agent.OpenAI", return_value=mock_openai_client):
         run_agent(
             user_message="Tell me more",
-            qdrant_store=mock_qdrant_store,
+            vector_store=mock_vector_store,
             conversation_memory=mock_conversation_memory,
             conversation_id=7,
             openai_client=mock_openai_client,
@@ -301,7 +301,7 @@ def test_agent_includes_history_in_prompt(
 
 
 def test_agent_saves_turn_to_memory(
-    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+    mock_vector_store, mock_conversation_memory, mock_openai_client
 ):
     """After generating a reply, the agent must persist the turn to memory."""
     from app.agent import run_agent
@@ -309,7 +309,7 @@ def test_agent_saves_turn_to_memory(
     with patch("app.agent.OpenAI", return_value=mock_openai_client):
         run_agent(
             user_message="Hello!",
-            qdrant_store=mock_qdrant_store,
+            vector_store=mock_vector_store,
             conversation_memory=mock_conversation_memory,
             conversation_id=55,
             openai_client=mock_openai_client,
@@ -323,80 +323,86 @@ def test_agent_saves_turn_to_memory(
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory unit tests
+# Conversation memory unit tests (PostgreSQL-backed)
 # ---------------------------------------------------------------------------
 
 
+def _make_pg_mock(fetchall_return=None):
+    """Return (mock_conn, mock_cursor) wired up as psycopg2 context managers."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = fetchall_return or []
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    return mock_conn, mock_cursor
+
+
 def test_conversation_memory_get_history_returns_messages():
-    """ConversationMemory.get_history should return messages in order."""
-    mock_qdrant = MagicMock()
-    mock_openai = MagicMock()
+    """ConversationMemory.get_history should return messages in chronological order."""
+    rows = [
+        ("user", "Hi"),
+        ("assistant", "Hello!"),
+    ]
+    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=rows)
 
-    # Simulate two scroll results ordered oldest→newest (reversed by impl)
-    p1 = MagicMock()
-    p1.payload = {"role": "user", "content": "Hi", "timestamp_ms": 1000}
-    p2 = MagicMock()
-    p2.payload = {"role": "assistant", "content": "Hello!", "timestamp_ms": 1001}
-    mock_qdrant.scroll.return_value = ([p2, p1], None)  # desc order from Qdrant
-
-    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
         from app.conversation_memory import ConversationMemory
 
-        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
         history = memory.get_history(conversation_id=42)
 
-    # After reversal, oldest message should be first
-    assert history[0]["content"] == "Hi"
-    assert history[1]["content"] == "Hello!"
+    assert history[0] == {"role": "user",      "content": "Hi"}
+    assert history[1] == {"role": "assistant", "content": "Hello!"}
 
 
-def test_conversation_memory_add_turn_upserts_two_points():
-    """add_turn should upsert exactly two points (user + assistant)."""
-    mock_qdrant = MagicMock()
+def test_conversation_memory_add_turn_inserts_two_rows():
+    """add_turn should executemany with exactly two rows (user + assistant)."""
+    mock_conn, mock_cursor = _make_pg_mock()
 
-    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
         from app.conversation_memory import ConversationMemory
 
-        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
         memory.add_turn(
             conversation_id=10,
             user_message="What is the price?",
             assistant_reply="The price is X.",
         )
 
-    mock_qdrant.upsert.assert_called_once()
-    points = mock_qdrant.upsert.call_args.kwargs["points"]
-    assert len(points) == 2
-    roles = {p.payload["role"] for p in points}
+    mock_cursor.executemany.assert_called_once()
+    _, rows = mock_cursor.executemany.call_args.args
+    assert len(rows) == 2
+    roles = {row[1] for row in rows}
     assert roles == {"user", "assistant"}
 
 
 def test_conversation_memory_history_filters_by_conversation():
-    """get_history must filter by conversation_id."""
-    mock_qdrant = MagicMock()
-    mock_qdrant.scroll.return_value = ([], None)
+    """get_history must pass conversation_id as a query parameter."""
+    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=[])
 
-    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
         from app.conversation_memory import ConversationMemory
 
-        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
         memory.get_history(conversation_id=99)
 
-    scroll_call = mock_qdrant.scroll.call_args
-    scroll_filter = scroll_call.kwargs.get("scroll_filter") or scroll_call.args[0]
-    condition = scroll_filter.must[0]
-    assert condition.key == "conversation_id"
-    assert condition.match.value == 99
+    execute_call = mock_cursor.execute.call_args
+    params = execute_call.args[1]  # second positional arg is the params tuple
+    assert params[0] == 99  # first param is conversation_id
 
 
 # ---------------------------------------------------------------------------
-# Qdrant store unit tests
+# PgVectorStore unit tests
 # ---------------------------------------------------------------------------
 
 
-def test_qdrant_store_search_returns_payloads():
-    """QdrantStore.search should return payload dicts from Qdrant hits."""
-    mock_qdrant = MagicMock()
+def test_pg_vector_store_search_returns_payloads():
+    """PgVectorStore.search should return dicts built from Postgres rows."""
+    rows = [
+        ("Knowledge snippet A", {}),
+        ("Knowledge snippet B", {"source": "manual"}),
+    ]
+    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=rows)
     mock_openai = MagicMock()
 
     # Fake embedding response
@@ -404,20 +410,16 @@ def test_qdrant_store_search_returns_payloads():
     embedding_resp.data = [MagicMock(embedding=[0.1] * 1536)]
     mock_openai.embeddings.create.return_value = embedding_resp
 
-    # Fake Qdrant search results
-    hit1 = MagicMock()
-    hit1.payload = {"text": "Knowledge snippet A"}
-    hit2 = MagicMock()
-    hit2.payload = {"text": "Knowledge snippet B"}
-    mock_qdrant.search.return_value = [hit1, hit2]
+    with patch("app.pg_vector_store.psycopg2.connect", return_value=mock_conn):
+        with patch("app.pg_vector_store.register_vector"):
+            from app.pg_vector_store import PgVectorStore
 
-    with patch("app.qdrant_store.QdrantClient", return_value=mock_qdrant):
-        from app.qdrant_store import QdrantStore
+            store = PgVectorStore(dsn="postgresql://test", openai_client=mock_openai)
+            results = store.search("test query")
 
-        store = QdrantStore(openai_client=mock_openai)
-        results = store.search("test query")
-
-    assert results == [{"text": "Knowledge snippet A"}, {"text": "Knowledge snippet B"}]
+    assert results[0]["text"] == "Knowledge snippet A"
+    assert results[1]["text"] == "Knowledge snippet B"
+    assert results[1]["source"] == "manual"
 
 
 # ---------------------------------------------------------------------------

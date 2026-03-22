@@ -1,82 +1,86 @@
-"""Qdrant-backed conversation memory for multi-turn chat history.
+"""PostgreSQL-backed conversation memory for multi-turn chat history.
 
-Each conversation turn (user message + assistant reply) is stored as two
-payload-only points in a dedicated Qdrant collection.  History is retrieved
-via Qdrant's ``scroll`` API filtered by ``conversation_id`` — no vector
-similarity search is required.
+Each conversation turn (user message + assistant reply) is stored as two rows
+in a dedicated PostgreSQL table.  History is retrieved per-conversation with a
+simple ``WHERE conversation_id = %s`` query ordered by timestamp — no vector
+search is required.
 
-Why Qdrant instead of pgvector?
-- Qdrant is already in the stack; no extra service is needed.
-- ``scroll`` + payload filtering gives fast chronological retrieval.
-- Storing embeddings alongside messages enables optional semantic search
-  over history in the future (e.g. "what did the user ask about yesterday?").
-- pgvector / PostgreSQL would be a better fit if you need ACID transactions,
-  complex relational queries, or analytics over conversation data.
+Why PostgreSQL instead of a separate Qdrant service?
+- Chatwoot already runs a Postgres/pgvector instance; no extra service needed.
+- Relational storage is a natural fit for ordered, per-conversation history.
+- Enables future SQL analytics (e.g. volume per conversation, resolution time).
 """
 
-import hashlib
 import logging
 import time
-from typing import Any
+from contextlib import contextmanager
 
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import (
-    Distance,
-    FieldCondition,
-    Filter,
-    MatchValue,
-    OrderBy,
-    PointStruct,
-    VectorParams,
-)
+import psycopg2
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# We store a tiny 1-dimensional dummy vector because Qdrant collections
-# require vectors.  Actual retrieval uses payload filtering, not ANN search.
-_DUMMY_VECTOR_SIZE = 1
-_DUMMY_VECTOR = [0.0]
-
-
-def _point_id(conversation_id: int, role: str, timestamp_ms: int) -> int:
-    """Return a deterministic unsigned 64-bit integer point ID."""
-    key = f"{conversation_id}:{role}:{timestamp_ms}"
-    return int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2**64)
-
 
 class ConversationMemory:
-    """Stores and retrieves per-conversation message history in Qdrant."""
+    """Stores and retrieves per-conversation message history in PostgreSQL."""
 
     def __init__(
         self,
-        qdrant_url: str | None = None,
-        qdrant_api_key: str | None = None,
-        collection: str | None = None,
-        qdrant_client: Any | None = None,
+        dsn: str | None = None,
+        table: str | None = None,
     ) -> None:
-        self.collection = collection or settings.qdrant_memory_collection
-        self._qdrant = qdrant_client or QdrantClient(
-            url=qdrant_url or settings.qdrant_url,
-            api_key=qdrant_api_key or settings.qdrant_api_key or None,
-        )
+        # Table name comes from trusted config, not user input.
+        self._dsn = dsn or settings.postgres_dsn
+        self._table = table or settings.pg_memory_table
 
     # ------------------------------------------------------------------
-    # Collection management
+    # Connection helper
     # ------------------------------------------------------------------
 
+    @contextmanager
+    def _connection(self):
+        conn = psycopg2.connect(self._dsn)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Schema management
+    # ------------------------------------------------------------------
+
+    def ensure_table(self) -> None:
+        """Create the conversations table and index if they do not already exist."""
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self._table} (
+                        id             SERIAL PRIMARY KEY,
+                        conversation_id INTEGER NOT NULL,
+                        role           TEXT    NOT NULL,
+                        content        TEXT    NOT NULL,
+                        timestamp_ms   BIGINT  NOT NULL,
+                        role_order     INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                cur.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {self._table}_conv_ts_idx
+                    ON {self._table} (conversation_id, timestamp_ms ASC, role_order ASC)
+                    """
+                )
+        logger.info("Ensured conversation memory table '%s'", self._table)
+
+    # keep the same method name used in main.py lifespan
     def ensure_collection(self) -> None:
-        """Create the memory collection if it does not already exist."""
-        existing = {c.name for c in self._qdrant.get_collections().collections}
-        if self.collection not in existing:
-            self._qdrant.create_collection(
-                collection_name=self.collection,
-                vectors_config=VectorParams(
-                    size=_DUMMY_VECTOR_SIZE, distance=Distance.DOT
-                ),
-            )
-            logger.info("Created memory collection '%s'", self.collection)
+        self.ensure_table()
 
     # ------------------------------------------------------------------
     # Writing
@@ -88,7 +92,7 @@ class ConversationMemory:
         user_message: str,
         assistant_reply: str,
     ) -> None:
-        """Persist one conversation turn (user + assistant) to Qdrant.
+        """Persist one conversation turn (user + assistant) to PostgreSQL.
 
         Args:
             conversation_id: Chatwoot conversation ID.
@@ -96,31 +100,20 @@ class ConversationMemory:
             assistant_reply: Tata's generated reply text.
         """
         now_ms = int(time.time() * 1000)
-        points = [
-            PointStruct(
-                id=_point_id(conversation_id, "user", now_ms),
-                vector=_DUMMY_VECTOR,
-                payload={
-                    "conversation_id": conversation_id,
-                    "role": "user",
-                    "content": user_message,
-                    "timestamp_ms": now_ms,
-                    "role_order": 0,
-                },
-            ),
-            PointStruct(
-                id=_point_id(conversation_id, "assistant", now_ms),
-                vector=_DUMMY_VECTOR,
-                payload={
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "timestamp_ms": now_ms,
-                    "role_order": 1,
-                },
-            ),
+        rows = [
+            (conversation_id, "user",      user_message,    now_ms, 0),
+            (conversation_id, "assistant", assistant_reply, now_ms, 1),
         ]
-        self._qdrant.upsert(collection_name=self.collection, points=points)
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    f"""
+                    INSERT INTO {self._table}
+                        (conversation_id, role, content, timestamp_ms, role_order)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
         logger.debug(
             "Saved turn for conversation %d (%d chars user, %d chars reply)",
             conversation_id,
@@ -147,27 +140,24 @@ class ConversationMemory:
             ready to be inserted into an OpenAI ``messages`` array.
         """
         limit = (max_turns or settings.memory_max_turns) * 2  # 2 messages per turn
-        conv_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="conversation_id",
-                    match=MatchValue(value=conversation_id),
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                # Fetch the most recent *limit* rows, then flip to chronological order.
+                cur.execute(
+                    f"""
+                    SELECT role, content FROM (
+                        SELECT role, content, timestamp_ms, role_order
+                        FROM {self._table}
+                        WHERE conversation_id = %s
+                        ORDER BY timestamp_ms DESC, role_order DESC
+                        LIMIT %s
+                    ) sub
+                    ORDER BY timestamp_ms ASC, role_order ASC
+                    """,
+                    (conversation_id, limit),
                 )
-            ]
-        )
-        points, _ = self._qdrant.scroll(
-            collection_name=self.collection,
-            scroll_filter=conv_filter,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-            order_by=OrderBy(key="timestamp_ms", direction="desc"),
-        )
-        # Reverse to chronological order (oldest → newest)
-        messages = [
-            {"role": p.payload["role"], "content": p.payload["content"]}
-            for p in reversed(points)
-        ]
+                rows = cur.fetchall()
+        messages = [{"role": row[0], "content": row[1]} for row in rows]
         logger.debug(
             "Loaded %d history messages for conversation %d",
             len(messages),

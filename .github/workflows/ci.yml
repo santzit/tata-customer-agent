@@ -34,4 +34,4 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Dummy values for services that are mocked in all other tests
           CHATWOOT_API_TOKEN: "test-token"
-          QDRANT_URL: "http://localhost:6333"
+          POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"

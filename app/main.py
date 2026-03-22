@@ -1,4 +1,4 @@
-"""FastAPI application — Tata customer support webhook server."""
+"""FastAPI application -- Tata customer support webhook server."""
 
 import hmac
 import logging
@@ -10,7 +10,7 @@ from app.agent import run_agent
 from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
-from app.qdrant_store import QdrantStore
+from app.pg_vector_store import PgVectorStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,22 +19,22 @@ logger = logging.getLogger(__name__)
 # Singletons (created once at startup)
 # ---------------------------------------------------------------------------
 
-_qdrant_store: QdrantStore | None = None
+_vector_store: PgVectorStore | None = None
 _conversation_memory: ConversationMemory | None = None
 _chatwoot_client: ChatwootClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global _qdrant_store, _conversation_memory, _chatwoot_client
-    _qdrant_store = QdrantStore()
+    global _vector_store, _conversation_memory, _chatwoot_client
+    _vector_store = PgVectorStore()
     _conversation_memory = ConversationMemory()
     _chatwoot_client = ChatwootClient()
-    for store in (_qdrant_store, _conversation_memory):
+    for store in (_vector_store, _conversation_memory):
         try:
             store.ensure_collection()
         except Exception as exc:
-            logger.warning("Could not connect to Qdrant at startup: %s", exc)
+            logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
     yield
 
 
@@ -110,7 +110,7 @@ async def chatwoot_webhook(
     try:
         reply = run_agent(
             user_message=user_text,
-            qdrant_store=_qdrant_store,
+            vector_store=_vector_store,
             conversation_memory=_conversation_memory,
             conversation_id=conversation_id,
         )

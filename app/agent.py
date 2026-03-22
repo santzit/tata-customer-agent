@@ -45,9 +45,9 @@ def load_history_node(state: AgentState, *, conversation_memory: Any) -> AgentSt
     return {**state, "history": history}
 
 
-def retrieve_node(state: AgentState, *, qdrant_store: Any) -> AgentState:
-    """Retrieve relevant knowledge from Qdrant."""
-    docs = qdrant_store.search(state["user_message"])
+def retrieve_node(state: AgentState, *, vector_store: Any) -> AgentState:
+    """Retrieve relevant knowledge from the pgvector store."""
+    docs = vector_store.search(state["user_message"])
     logger.debug("Retrieved %d docs for query: %s", len(docs), state["user_message"][:80])
     return {**state, "context_docs": docs}
 
@@ -94,7 +94,7 @@ def save_turn_node(state: AgentState, *, conversation_memory: Any) -> AgentState
 
 
 def build_agent(
-    qdrant_store: Any,
+    vector_store: Any,
     conversation_memory: Any,
     openai_client: OpenAI | None = None,
 ) -> Any:
@@ -104,7 +104,7 @@ def build_agent(
     ``load_history`` → ``retrieve`` → ``generate`` → ``save_turn``
 
     Args:
-        qdrant_store: An instance of :class:`~app.qdrant_store.QdrantStore`.
+        vector_store: An instance of :class:`~app.pg_vector_store.PgVectorStore`.
         conversation_memory: An instance of
             :class:`~app.conversation_memory.ConversationMemory`.
         openai_client: Optional OpenAI client; a default one is created if omitted.
@@ -122,7 +122,7 @@ def build_agent(
     )
     graph.add_node(
         "retrieve",
-        lambda state: retrieve_node(state, qdrant_store=qdrant_store),
+        lambda state: retrieve_node(state, vector_store=vector_store),
     )
     graph.add_node(
         "generate",
@@ -149,7 +149,7 @@ def build_agent(
 
 def run_agent(
     user_message: str,
-    qdrant_store: Any,
+    vector_store: Any,
     conversation_memory: Any,
     conversation_id: int = 0,
     openai_client: OpenAI | None = None,
@@ -158,7 +158,7 @@ def run_agent(
 
     Args:
         user_message: The message received from the user/Chatwoot.
-        qdrant_store: Configured :class:`~app.qdrant_store.QdrantStore`.
+        vector_store: Configured :class:`~app.pg_vector_store.PgVectorStore`.
         conversation_memory: Configured
             :class:`~app.conversation_memory.ConversationMemory`.
         conversation_id: Chatwoot conversation ID (used to load/save history).
@@ -167,7 +167,7 @@ def run_agent(
     Returns:
         The agent's reply as a plain string.
     """
-    agent = build_agent(qdrant_store, conversation_memory, openai_client)
+    agent = build_agent(vector_store, conversation_memory, openai_client)
     initial_state: AgentState = {
         "conversation_id": conversation_id,
         "user_message": user_message,

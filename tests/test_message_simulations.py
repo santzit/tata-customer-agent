@@ -5,14 +5,14 @@ Two-way approach
 **Section 1 -- Mocked OpenAI** (always runs, no API key required)
     Exercises the full four-node LangGraph pipeline with a deterministic mock
     OpenAI client.  These tests verify that the pipeline logic is wired
-    correctly: Qdrant is queried, knowledge snippets reach the OpenAI prompt,
-    the reply is returned, and the turn is persisted to memory.
+    correctly: the vector store is queried, knowledge snippets reach the
+    OpenAI prompt, the reply is returned, and the turn is persisted to memory.
 
 **Section 2 -- Live OpenAI** (skipped when OPENAI_API_KEY is absent or a dummy)
-    Makes real calls to the OpenAI API using the configured key.  Qdrant and
-    Chatwoot are still mocked because they are infrastructure services.  These
-    tests verify that the agent produces a sensible, non-empty reply for each
-    realistic customer scenario when wired to the actual model.
+    Makes real calls to the OpenAI API using the configured key.  PostgreSQL
+    and Chatwoot are still mocked because they are infrastructure services.
+    These tests verify that the agent produces a sensible, non-empty reply for
+    each realistic customer scenario when wired to the actual model.
 
 To run the live tests locally:
 
@@ -35,8 +35,8 @@ from app.agent import run_agent
 # ---------------------------------------------------------------------------
 
 
-def _make_qdrant_store(snippets: list[str]) -> MagicMock:
-    """Return a mock QdrantStore whose search returns the given text snippets."""
+def _make_vector_store(snippets: list[str]) -> MagicMock:
+    """Return a mock PgVectorStore whose search returns the given text snippets."""
     store = MagicMock()
     store.search.return_value = [{"text": s} for s in snippets]
     return store
@@ -75,20 +75,20 @@ def _run_mocked(
     """Run the agent with a mocked OpenAI client and mocked infrastructure.
 
     Returns:
-        (agent_reply, openai_client_mock, qdrant_store_mock, memory_mock)
+        (agent_reply, openai_client_mock, vector_store_mock, memory_mock)
     """
     openai_client = _make_mock_openai_client(reply)
-    qdrant_store = _make_qdrant_store(snippets)
+    vector_store = _make_vector_store(snippets)
     memory = _make_memory(history)
 
     agent_reply = run_agent(
         user_message=user_message,
-        qdrant_store=qdrant_store,
+        vector_store=vector_store,
         conversation_memory=memory,
         conversation_id=conversation_id,
         openai_client=openai_client,
     )
-    return agent_reply, openai_client, qdrant_store, memory
+    return agent_reply, openai_client, vector_store, memory
 
 
 def _run_live(
@@ -101,20 +101,20 @@ def _run_live(
     """Run the agent with a real OpenAI client and mocked infrastructure.
 
     Returns:
-        (agent_reply, qdrant_store_mock, memory_mock)
+        (agent_reply, vector_store_mock, memory_mock)
     """
     openai_client = _real_openai_client()
-    qdrant_store = _make_qdrant_store(snippets)
+    vector_store = _make_vector_store(snippets)
     memory = _make_memory(history)
 
     agent_reply = run_agent(
         user_message=user_message,
-        qdrant_store=qdrant_store,
+        vector_store=vector_store,
         conversation_memory=memory,
         conversation_id=conversation_id,
         openai_client=openai_client,
     )
-    return agent_reply, qdrant_store, memory
+    return agent_reply, vector_store, memory
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +151,11 @@ class TestMockedSimulations:
             "You can reach us at support@tatamotors.com or call 1800-209-7979.",
         ]
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert snippets[0] in user_content
@@ -182,11 +182,11 @@ class TestMockedSimulations:
             "For visit-related enquiries please call the reception at +91 22 6665 8282.",
         ]
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Bombay House" in user_content
@@ -205,11 +205,11 @@ class TestMockedSimulations:
             "Sunday hours: 10:00-17:00 IST. Public holidays may vary.",
         ]
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "09:00" in user_content
@@ -228,11 +228,11 @@ class TestMockedSimulations:
             "Electric vehicles: Nexon EV, Tiago EV, Punch EV -- available at select dealerships.",
         ]
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Nexon" in user_content
@@ -252,11 +252,11 @@ class TestMockedSimulations:
             "Extended warranty options: up to 5 years. Contact your nearest dealer.",
         ]
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "100,000 km" in user_content
@@ -272,11 +272,11 @@ class TestMockedSimulations:
         )
         snippets: list[str] = []
 
-        reply, openai_client, qdrant_store, memory = _run_mocked(
+        reply, openai_client, vector_store, memory = _run_mocked(
             user_message, snippets=snippets, reply=expected_reply
         )
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Can you book a table" in user_content
@@ -337,7 +337,7 @@ class TestMockedSimulations:
 class TestLiveSimulations:
     """Full pipeline tests that make real calls to the OpenAI API.
 
-    Qdrant and Chatwoot are still mocked -- only OpenAI is live.
+    PostgreSQL and Chatwoot are still mocked -- only OpenAI is live.
     Assertions check structural correctness (non-empty reply, correct calls)
     rather than exact wording, since LLM output is non-deterministic.
     """
@@ -350,9 +350,9 @@ class TestLiveSimulations:
             "You can reach us at support@tatamotors.com or call 1800-209-7979.",
         ]
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once_with(
             conversation_id=1, user_message=user_message, assistant_reply=reply
@@ -369,9 +369,9 @@ class TestLiveSimulations:
             "For visit-related enquiries please call the reception at +91 22 6665 8282.",
         ]
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
@@ -383,9 +383,9 @@ class TestLiveSimulations:
             "Sunday hours: 10:00-17:00 IST. Public holidays may vary.",
         ]
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
@@ -397,9 +397,9 @@ class TestLiveSimulations:
             "Electric vehicles: Nexon EV, Tiago EV, Punch EV -- available at select dealerships.",
         ]
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
@@ -411,9 +411,9 @@ class TestLiveSimulations:
             "Extended warranty options: up to 5 years. Contact your nearest dealer.",
         ]
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
@@ -422,9 +422,9 @@ class TestLiveSimulations:
         user_message = "Can you book a table at a restaurant for me?"
         snippets: list[str] = []
 
-        reply, qdrant_store, memory = _run_live(user_message, snippets=snippets)
+        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
 
-        qdrant_store.search.assert_called_once_with(user_message)
+        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
         memory.add_turn.assert_called_once()
 
@@ -433,7 +433,7 @@ class TestLiveSimulations:
         conversation_id = 201
 
         # Turn 1
-        reply_1, qdrant_1, memory_1 = _run_live(
+        reply_1, vector_store_1, memory_1 = _run_live(
             "Hi there",
             snippets=["Customer support available 24/7."],
             conversation_id=conversation_id,
@@ -450,7 +450,7 @@ class TestLiveSimulations:
             {"role": "user", "content": "Hi there"},
             {"role": "assistant", "content": reply_1},
         ]
-        reply_2, qdrant_2, memory_2 = _run_live(
+        reply_2, vector_store_2, memory_2 = _run_live(
             "What are your opening hours?",
             snippets=["Showrooms open Mon-Sat 09:00-19:00."],
             conversation_id=conversation_id,

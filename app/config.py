@@ -11,11 +11,12 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
 
-    # Qdrant
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: str = ""
-    qdrant_collection: str = "tata_knowledge"
-    qdrant_memory_collection: str = "tata_conversations"
+    # PostgreSQL / pgvector
+    # Use the same Postgres that Chatwoot already runs.
+    # Example: postgresql://user:password@localhost:5432/chatwoot
+    postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/tata_agent"
+    pg_vector_table: str = "tata_knowledge"
+    pg_memory_table: str = "tata_conversations"
     memory_max_turns: int = 10  # number of past conversation turns to include
 
     # Chatwoot
