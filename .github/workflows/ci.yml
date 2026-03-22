@@ -13,6 +13,21 @@ jobs:
     permissions:
       contents: read
 
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tata_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tata_agent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,7 +51,7 @@ jobs:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           OPENAI_API_ENDPOINT: ${{ vars.OPENAI_API_ENDPOINT }}
           EMBEDDING_MODEL_SMALL: ${{ vars.EMBEDDING_MODEL_SMALL }}
-          # PostgreSQL is mocked in all tests; DSN is a dummy placeholder
+          # Real PostgreSQL/pgvector service (see services.postgres above)
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
           # Note: CHATWOOT_API_TOKEN is intentionally omitted.
           # The Chatwoot webhook trigger is simulated in tests by calling

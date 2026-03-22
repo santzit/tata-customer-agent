@@ -4,24 +4,33 @@ Two-way approach
 ----------------
 **Section 1 -- Mocked OpenAI** (always runs, no API key required)
     Exercises the full four-node LangGraph pipeline with a deterministic mock
-    OpenAI client.  These tests verify that the pipeline logic is wired
-    correctly: the vector store is queried, knowledge snippets reach the
-    OpenAI prompt, the reply is returned, and the turn is persisted to memory.
+    OpenAI client and mock vector store / memory.  These tests verify that the
+    pipeline logic is wired correctly: the vector store is queried, knowledge
+    snippets reach the OpenAI prompt, the reply is returned, and the turn is
+    persisted to memory.
 
-**Section 2 -- Live OpenAI** (skipped when OPENAI_API_KEY is absent or a dummy)
-    Makes real calls to the OpenAI API using the configured key.  The Chatwoot
-    webhook trigger is simulated by calling ``run_agent()`` directly — no real
-    Chatwoot instance is required.  The PostgreSQL vector store and conversation
-    memory are mocked; snippets are loaded from ``docs/company_context.md`` so
-    the agent reasons about realistic company knowledge.
+**Section 2 -- Live** (skipped when OPENAI_API_KEY is absent or a dummy)
+    All real services except Chatwoot:
+    - OpenAI (chat completions + embeddings) — real API call
+    - PostgreSQL/pgvector vector store — real DB, pre-populated from
+      ``docs/company_context.md`` using real OpenAI embeddings
+    - PostgreSQL conversation memory — real DB, turn persisted and verified
+    - Chatwoot — simulated by calling ``run_agent()`` directly; no live
+      Chatwoot instance or API token is required
 
 To run the live tests locally:
 
-    OPENAI_API_KEY=sk-... LLM_MODEL=gpt-4.1 pytest tests/test_message_simulations.py -v
+    OPENAI_API_KEY=sk-... \\
+    LLM_MODEL=gpt-4.1 \\
+    POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/tata_agent \\
+    pytest tests/test_message_simulations.py::TestLiveSimulations -v
 
 For Azure OpenAI, also set OPENAI_API_ENDPOINT:
 
-    OPENAI_API_KEY=<key> OPENAI_API_ENDPOINT=https://<resource>.cognitiveservices.azure.com/openai/v1/ LLM_MODEL=gpt-4.1 pytest tests/test_message_simulations.py -v
+    OPENAI_API_KEY=<key> \\
+    OPENAI_API_ENDPOINT=https://<resource>.cognitiveservices.azure.com/openai/v1/ \\
+    LLM_MODEL=gpt-4.1 \\
+    pytest tests/test_message_simulations.py::TestLiveSimulations -v
 """
 
 from __future__ import annotations
@@ -44,23 +53,31 @@ _DOCS_DIR = pathlib.Path(__file__).parent.parent / "docs"
 
 
 def _load_doc_section(heading: str) -> str:
-    """Return the body text of a ``##``-level section from company_context.md.
-
-    Args:
-        heading: The exact section heading text (without ``## ``), e.g.
-            ``"Address"`` or ``"Opening Hours"``.
-
-    Returns:
-        The section body as a single string, or an empty string if not found.
-    """
+    """Return the body text of a ``##``-level section from company_context.md."""
     content = (_DOCS_DIR / "company_context.md").read_text(encoding="utf-8")
+    # re.MULTILINE is required so that ^ inside the lookahead matches line starts.
     pattern = rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)"
     match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
     return match.group(1).strip() if match else ""
 
 
+def _iter_doc_sections() -> list[tuple[str, str]]:
+    """Return (section_id, full_text) pairs for every ``##`` section in company_context.md."""
+    content = (_DOCS_DIR / "company_context.md").read_text(encoding="utf-8")
+    parts = re.split(r"^## ", content, flags=re.MULTILINE)
+    sections = []
+    for part in parts[1:]:  # skip preamble before first ##
+        lines = part.strip().split("\n", 1)
+        heading = lines[0].strip()
+        body = lines[1].strip() if len(lines) > 1 else ""
+        if body:
+            section_id = re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")
+            sections.append((section_id, f"{heading}\n\n{body}"))
+    return sections
+
+
 # ---------------------------------------------------------------------------
-# Helpers shared by both sections
+# Helpers shared by both test sections
 # ---------------------------------------------------------------------------
 
 
@@ -89,11 +106,7 @@ def _make_mock_openai_client(reply: str) -> MagicMock:
 
 
 def _real_openai_client() -> OpenAI:
-    """Return a real OpenAI client using the environment API key and optional endpoint.
-
-    When ``OPENAI_API_ENDPOINT`` is set the client points at that base URL,
-    enabling Azure OpenAI Cognitive Services endpoints.
-    """
+    """Return a real OpenAI client (standard or Azure) from environment variables."""
     kwargs: dict = {"api_key": os.environ["OPENAI_API_KEY"]}
     endpoint = os.environ.get("OPENAI_API_ENDPOINT", "")
     if endpoint:
@@ -128,34 +141,8 @@ def _run_mocked(
     return agent_reply, openai_client, vector_store, memory
 
 
-def _run_live(
-    user_message: str,
-    *,
-    snippets: list[str],
-    conversation_id: int = 1,
-    history: list[dict] | None = None,
-) -> tuple[str, MagicMock, MagicMock]:
-    """Run the agent with a real OpenAI client and mocked infrastructure.
-
-    Returns:
-        (agent_reply, vector_store_mock, memory_mock)
-    """
-    openai_client = _real_openai_client()
-    vector_store = _make_vector_store(snippets)
-    memory = _make_memory(history)
-
-    agent_reply = run_agent(
-        user_message=user_message,
-        vector_store=vector_store,
-        conversation_memory=memory,
-        conversation_id=conversation_id,
-        openai_client=openai_client,
-    )
-    return agent_reply, vector_store, memory
-
-
 # ---------------------------------------------------------------------------
-# Skip guard for live-OpenAI tests
+# Skip guard for live tests
 # ---------------------------------------------------------------------------
 
 _api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -164,7 +151,7 @@ _key_is_real = _api_key not in _KNOWN_DUMMY_KEYS
 
 requires_openai = pytest.mark.skipif(
     not _key_is_real,
-    reason="OPENAI_API_KEY is not configured -- skipping live OpenAI tests",
+    reason="OPENAI_API_KEY is not configured -- skipping live tests",
 )
 
 
@@ -366,129 +353,194 @@ class TestMockedSimulations:
 
 
 # ===========================================================================
-# SECTION 2 -- Live OpenAI (skipped when OPENAI_API_KEY is not configured)
+# SECTION 2 -- Live (skipped when OPENAI_API_KEY is not configured)
 # ===========================================================================
+
+
+@pytest.fixture(scope="class")
+def live_infrastructure(pg_dsn, pg_test_vector_table, pg_test_memory_table):
+    """Set up real services shared by all live simulation tests.
+
+    - Builds a real OpenAI client (standard or Azure).
+    - Creates a real PgVectorStore and populates it with every section from
+      ``docs/company_context.md`` using real OpenAI embeddings.
+    - Provides a real ConversationMemory backed by the same PostgreSQL instance.
+
+    Skipped automatically when ``OPENAI_API_KEY`` is absent or a placeholder
+    (the ``@requires_openai`` class decorator fires first).
+    """
+    from app.conversation_memory import ConversationMemory
+    from app.pg_vector_store import PgVectorStore
+
+    openai_client = _real_openai_client()
+
+    store = PgVectorStore(
+        dsn=pg_dsn, table=pg_test_vector_table, openai_client=openai_client
+    )
+    store.ensure_table()
+
+    # Upsert every section of the company knowledge base.
+    for section_id, text in _iter_doc_sections():
+        store.upsert(section_id, text, {"source": "company_context"})
+
+    memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+
+    return store, memory, openai_client
 
 
 @requires_openai
 class TestLiveSimulations:
-    """Full pipeline tests that make real calls to the OpenAI API.
+    """Full pipeline tests using real OpenAI, real pgvector, and real PostgreSQL memory.
 
-    The Chatwoot webhook trigger is simulated by calling ``run_agent()``
-    directly — no real Chatwoot instance or API token is required.
-    The PostgreSQL vector store and conversation memory are mocked; context
-    snippets come from ``docs/company_context.md`` so the agent reasons about
-    realistic academy knowledge rather than hard-coded strings.
+    Chatwoot is the only service that is *not* real: the incoming webhook
+    message is simulated by calling ``run_agent()`` directly, and no reply is
+    posted back to a Chatwoot conversation.  This is intentional — a live
+    Chatwoot instance is not available in CI.
 
-    Assertions check structural correctness (non-empty reply, correct calls)
-    rather than exact wording, since LLM output is non-deterministic.
+    Assertions verify structural correctness (non-empty reply, memory
+    persistence) rather than exact wording, since LLM output is
+    non-deterministic.
     """
 
-    def test_greeting(self):
-        """Live: agent produces a non-empty greeting for Nova Academy."""
-        user_message = "Hi there"
-        snippets = [
-            _load_doc_section("About Us"),
-            _load_doc_section("Contact Information"),
-        ]
+    def test_greeting(self, live_infrastructure):
+        """Live: agent greets the customer; turn is persisted to real memory."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2001
 
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
-
-        vector_store.search.assert_called_once_with(user_message)
-        assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once_with(
-            conversation_id=1, user_message=user_message, assistant_reply=reply
+        reply = run_agent(
+            user_message="Hi there",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
         )
 
-    def test_company_address(self):
-        """Live: agent responds to a company address question using docs context."""
-        user_message = "What is the academy address?"
-        snippets = [
-            _load_doc_section("Address"),
-            _load_doc_section("Contact Information"),
-        ]
-
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
-
-        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once()
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
+        assert history[0]["role"] == "user"
+        assert history[1]["role"] == "assistant"
+        assert history[1]["content"] == reply
 
-    def test_opening_hours(self):
-        """Live: agent returns opening hours from docs context."""
-        user_message = "What are the opening hours?"
-        snippets = [_load_doc_section("Opening Hours")]
+    def test_company_address(self, live_infrastructure):
+        """Live: agent answers an address question using pgvector-retrieved context."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2002
 
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
+        reply = run_agent(
+            user_message="What is the academy address?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
+        )
 
-        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once()
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
 
-    def test_courses_offered(self):
-        """Live: agent lists available courses from docs context."""
-        user_message = "What courses does Nova Academy offer?"
-        snippets = [_load_doc_section("Courses and Activities")]
+    def test_opening_hours(self, live_infrastructure):
+        """Live: agent returns opening hours from pgvector-retrieved context."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2003
 
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
+        reply = run_agent(
+            user_message="What are the opening hours?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
+        )
 
-        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once()
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
 
-    def test_pricing_plans(self):
-        """Live: agent explains pricing plans from docs context."""
-        user_message = "How much does a membership cost?"
-        snippets = [_load_doc_section("Membership Plans and Prices")]
+    def test_courses_offered(self, live_infrastructure):
+        """Live: agent lists available courses from pgvector-retrieved context."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2004
 
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
+        reply = run_agent(
+            user_message="What courses does Nova Academy offer?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
+        )
 
-        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once()
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
 
-    def test_unknown_topic_politely_declines(self):
-        """Live: agent replies gracefully for an off-topic query."""
-        user_message = "Can you book a table at a restaurant for me?"
-        snippets: list[str] = []
+    def test_pricing_plans(self, live_infrastructure):
+        """Live: agent explains membership pricing from pgvector-retrieved context."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2005
 
-        reply, vector_store, memory = _run_live(user_message, snippets=snippets)
+        reply = run_agent(
+            user_message="How much does a membership cost?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
+        )
 
-        vector_store.search.assert_called_once_with(user_message)
         assert isinstance(reply, str) and len(reply) > 0
-        memory.add_turn.assert_called_once()
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
 
-    def test_multi_turn_conversation(self):
-        """Live: turn-1 history is injected and turn-2 produces a valid reply."""
-        conversation_id = 201
+    def test_unknown_topic_politely_declines(self, live_infrastructure):
+        """Live: agent replies gracefully when the query is off-topic."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2006
+
+        reply = run_agent(
+            user_message="Can you book a table at a restaurant for me?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
+        )
+
+        assert isinstance(reply, str) and len(reply) > 0
+        history = memory.get_history(conversation_id=conv_id)
+        assert len(history) == 2
+
+    def test_multi_turn_conversation(self, live_infrastructure):
+        """Live: turn-1 history is stored in real memory and injected into turn 2."""
+        store, memory, openai_client = live_infrastructure
+        conv_id = 2007
 
         # Turn 1 — greeting
-        reply_1, vector_store_1, memory_1 = _run_live(
-            "Hi there",
-            snippets=[_load_doc_section("About Us")],
-            conversation_id=conversation_id,
+        reply_1 = run_agent(
+            user_message="Hi there",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
         )
         assert isinstance(reply_1, str) and len(reply_1) > 0
-        memory_1.add_turn.assert_called_once_with(
-            conversation_id=conversation_id,
-            user_message="Hi there",
-            assistant_reply=reply_1,
-        )
 
-        # Turn 2 — follow-up with history injected (simulating memory retrieval)
-        history = [
-            {"role": "user", "content": "Hi there"},
-            {"role": "assistant", "content": reply_1},
-        ]
-        reply_2, vector_store_2, memory_2 = _run_live(
-            "What are your opening hours?",
-            snippets=[_load_doc_section("Opening Hours")],
-            conversation_id=conversation_id,
-            history=history,
+        # Verify turn 1 is in the real DB
+        history_after_1 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_1) == 2
+        assert history_after_1[0] == {"role": "user", "content": "Hi there"}
+        assert history_after_1[1] == {"role": "assistant", "content": reply_1}
+
+        # Turn 2 — follow-up; agent will load turn-1 history from real DB
+        reply_2 = run_agent(
+            user_message="What are your opening hours?",
+            vector_store=store,
+            conversation_memory=memory,
+            conversation_id=conv_id,
+            openai_client=openai_client,
         )
         assert isinstance(reply_2, str) and len(reply_2) > 0
-        memory_2.add_turn.assert_called_once_with(
-            conversation_id=conversation_id,
-            user_message="What are your opening hours?",
-            assistant_reply=reply_2,
-        )
+
+        # Verify both turns are now persisted
+        history_after_2 = memory.get_history(conversation_id=conv_id)
+        assert len(history_after_2) == 4
+        assert history_after_2[0] == {"role": "user", "content": "Hi there"}
+        assert history_after_2[2] == {"role": "user", "content": "What are your opening hours?"}
+        assert history_after_2[3] == {"role": "assistant", "content": reply_2}

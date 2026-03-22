@@ -6,7 +6,7 @@ tests run offline with no real API keys or database connections.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -323,103 +323,107 @@ def test_agent_saves_turn_to_memory(
 
 
 # ---------------------------------------------------------------------------
-# Conversation memory unit tests (PostgreSQL-backed)
+# Conversation memory integration tests (real PostgreSQL)
 # ---------------------------------------------------------------------------
 
 
-def _make_pg_mock(fetchall_return=None):
-    """Return (mock_conn, mock_cursor) wired up as psycopg2 context managers."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = fetchall_return or []
-    mock_conn = MagicMock()
-    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-    mock_conn.__enter__.return_value = mock_conn
-    return mock_conn, mock_cursor
+def test_conversation_memory_add_and_get_history(
+    require_pg, pg_dsn, pg_test_memory_table
+):
+    """ConversationMemory persists a turn and retrieves it in chronological order."""
+    from app.conversation_memory import ConversationMemory
+
+    memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+    conv_id = 99901
+    memory.add_turn(
+        conversation_id=conv_id,
+        user_message="What is the price?",
+        assistant_reply="The price is X.",
+    )
+
+    history = memory.get_history(conversation_id=conv_id)
+    assert len(history) == 2
+    assert history[0] == {"role": "user",      "content": "What is the price?"}
+    assert history[1] == {"role": "assistant", "content": "The price is X."}
 
 
-def test_conversation_memory_get_history_returns_messages():
-    """ConversationMemory.get_history should return messages in chronological order."""
-    rows = [
-        ("user", "Hi"),
-        ("assistant", "Hello!"),
-    ]
-    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=rows)
+def test_conversation_memory_add_turn_inserts_two_rows(
+    require_pg, pg_dsn, pg_test_memory_table
+):
+    """add_turn must insert exactly two rows per turn — one user, one assistant."""
+    import psycopg2 as _psycopg2
 
-    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
-        from app.conversation_memory import ConversationMemory
+    from app.conversation_memory import ConversationMemory
 
-        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
-        history = memory.get_history(conversation_id=42)
+    conv_id = 99902
+    memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+    memory.add_turn(
+        conversation_id=conv_id,
+        user_message="Question",
+        assistant_reply="Answer",
+    )
 
-    assert history[0] == {"role": "user",      "content": "Hi"}
-    assert history[1] == {"role": "assistant", "content": "Hello!"}
+    conn = _psycopg2.connect(pg_dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT role FROM {pg_test_memory_table}"
+                " WHERE conversation_id = %s ORDER BY role_order",
+                (conv_id,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
-
-def test_conversation_memory_add_turn_inserts_two_rows():
-    """add_turn should executemany with exactly two rows (user + assistant)."""
-    mock_conn, mock_cursor = _make_pg_mock()
-
-    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
-        from app.conversation_memory import ConversationMemory
-
-        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
-        memory.add_turn(
-            conversation_id=10,
-            user_message="What is the price?",
-            assistant_reply="The price is X.",
-        )
-
-    mock_cursor.executemany.assert_called_once()
-    _, rows = mock_cursor.executemany.call_args.args
     assert len(rows) == 2
-    roles = {row[1] for row in rows}
-    assert roles == {"user", "assistant"}
+    assert {row[0] for row in rows} == {"user", "assistant"}
 
 
-def test_conversation_memory_history_filters_by_conversation():
-    """get_history must pass conversation_id as a query parameter."""
-    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=[])
+def test_conversation_memory_history_filters_by_conversation(
+    require_pg, pg_dsn, pg_test_memory_table
+):
+    """get_history must only return messages for the requested conversation_id."""
+    from app.conversation_memory import ConversationMemory
 
-    with patch("app.conversation_memory.psycopg2.connect", return_value=mock_conn):
-        from app.conversation_memory import ConversationMemory
+    conv_a, conv_b = 99903, 99904
+    memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
+    memory.add_turn(conversation_id=conv_a, user_message="Hello A", assistant_reply="Hi A!")
+    memory.add_turn(conversation_id=conv_b, user_message="Hello B", assistant_reply="Hi B!")
 
-        memory = ConversationMemory(dsn="postgresql://test", table="tata_conversations")
-        memory.get_history(conversation_id=99)
-
-    execute_call = mock_cursor.execute.call_args
-    params = execute_call.args[1]  # second positional arg is the params tuple
-    assert params[0] == 99  # first param is conversation_id
+    history_a = memory.get_history(conversation_id=conv_a)
+    assert len(history_a) == 2
+    assert all("A" in m["content"] for m in history_a)
+    assert all("B" not in m["content"] for m in history_a)
 
 
 # ---------------------------------------------------------------------------
-# PgVectorStore unit tests
+# PgVectorStore integration tests (real PostgreSQL/pgvector)
 # ---------------------------------------------------------------------------
 
 
-def test_pg_vector_store_search_returns_payloads():
-    """PgVectorStore.search should return dicts built from Postgres rows."""
-    rows = [
-        ("Knowledge snippet A", {}),
-        ("Knowledge snippet B", {"source": "manual"}),
-    ]
-    mock_conn, mock_cursor = _make_pg_mock(fetchall_return=rows)
+def test_pg_vector_store_upsert_and_search(
+    require_pg, pg_dsn, pg_test_vector_table
+):
+    """PgVectorStore upserts documents and retrieves them via cosine similarity.
+
+    The OpenAI embedding client is injected as a mock so this test exercises
+    the real pgvector SQL round-trip without requiring a live API key.
+    """
+    from app.pg_vector_store import PgVectorStore, _VECTOR_SIZE
+
     mock_openai = MagicMock()
+    mock_openai.embeddings.create.return_value = MagicMock(
+        data=[MagicMock(embedding=[0.1] * _VECTOR_SIZE)]
+    )
 
-    # Fake embedding response
-    embedding_resp = MagicMock()
-    embedding_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-    mock_openai.embeddings.create.return_value = embedding_resp
+    store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=mock_openai)
+    store.upsert("unit-test-doc-a", "Knowledge snippet A", {"source": "unit-test"})
+    store.upsert("unit-test-doc-b", "Knowledge snippet B", {"source": "unit-test"})
 
-    with patch("app.pg_vector_store.psycopg2.connect", return_value=mock_conn):
-        with patch("app.pg_vector_store.register_vector"):
-            from app.pg_vector_store import PgVectorStore
-
-            store = PgVectorStore(dsn="postgresql://test", openai_client=mock_openai)
-            results = store.search("test query")
-
-    assert results[0]["text"] == "Knowledge snippet A"
-    assert results[1]["text"] == "Knowledge snippet B"
-    assert results[1]["source"] == "manual"
+    results = store.search("test query", top_k=10)
+    texts = [r["text"] for r in results]
+    assert "Knowledge snippet A" in texts
+    assert "Knowledge snippet B" in texts
 
 
 # ---------------------------------------------------------------------------
