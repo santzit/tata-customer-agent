@@ -92,12 +92,12 @@ def test_client(mock_vector_store, mock_conversation_memory, mock_openai_client,
         # Patch run_agent so the whole flow is exercised but uses our mocks
         with patch(
             "app.main.run_agent",
-            side_effect=lambda user_message, vector_store, conversation_memory, conversation_id=0, **kw: (
+            side_effect=lambda user_message, vector_store, conversation_memory, conversation_id=0, **kw: [
                 mock_openai_client.chat.completions.create(
                     model="gpt-4.1",
                     messages=[{"role": "user", "content": user_message}],
                 ).choices[0].message.content
-            ),
+            ],
         ):
             yield TestClient(app, raise_server_exceptions=True)
 
@@ -232,7 +232,7 @@ def test_webhook_accepts_valid_token(test_client, mock_chatwoot_client):
 def test_agent_run_agent_calls_vector_store_and_openai(
     mock_vector_store, mock_conversation_memory, mock_openai_client
 ):
-    """run_agent should query the vector store then call OpenAI and return a string."""
+    """run_agent should query the vector store then call OpenAI and return a list of strings."""
     from app.agent import run_agent
 
     with patch("app.agent.OpenAI", return_value=mock_openai_client):
@@ -245,8 +245,9 @@ def test_agent_run_agent_calls_vector_store_and_openai(
         )
 
     mock_vector_store.search.assert_called_once_with("Tell me about warranty")
-    assert isinstance(reply, str)
+    assert isinstance(reply, list)
     assert len(reply) > 0
+    assert all(isinstance(msg, str) and len(msg) > 0 for msg in reply)
 
 
 def test_agent_uses_retrieved_context(
@@ -266,7 +267,7 @@ def test_agent_uses_retrieved_context(
             openai_client=mock_openai_client,
         )
 
-    call_args = mock_openai_client.chat.completions.create.call_args
+    call_args = mock_openai_client.chat.completions.create.call_args_list[0]
     messages = call_args.kwargs.get("messages") or call_args.args[0]
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     assert "Tata Nexon has a 5-star safety rating." in user_content
@@ -292,7 +293,7 @@ def test_agent_includes_history_in_prompt(
             openai_client=mock_openai_client,
         )
 
-    call_args = mock_openai_client.chat.completions.create.call_args
+    call_args = mock_openai_client.chat.completions.create.call_args_list[0]
     messages = call_args.kwargs.get("messages") or call_args.args[0]
     roles = [m["role"] for m in messages]
     assert "system" in roles

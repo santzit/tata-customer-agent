@@ -3,11 +3,11 @@
 Two-way approach
 ----------------
 **Section 1 -- Mocked OpenAI** (always runs, no API key required)
-    Exercises the full four-node LangGraph pipeline with a deterministic mock
+    Exercises the full five-node LangGraph pipeline with a deterministic mock
     OpenAI client and mock vector store / memory.  These tests verify that the
     pipeline logic is wired correctly: the vector store is queried, knowledge
-    snippets reach the OpenAI prompt, the reply is returned, and the turn is
-    persisted to memory.
+    snippets reach the OpenAI prompt, the reply is returned, the supervisor
+    review step approves it, and the turn is persisted to memory.
 
 **Section 2 -- Live** (skipped when OPENAI_API_KEY is absent or a dummy)
     All real services except Chatwoot:
@@ -98,12 +98,37 @@ def _make_memory(history: list[dict] | None = None) -> MagicMock:
     return memory
 
 
-def _make_mock_openai_client(reply: str) -> MagicMock:
-    """Return a mock OpenAI client that returns *reply* from chat completions."""
+def _make_mock_openai_client(reply: str, supervisor_verdict: str = "APPROVED") -> MagicMock:
+    """Return a mock OpenAI client that handles both LangGraph LLM calls.
+
+    The pipeline makes two ``chat.completions.create`` calls per turn:
+    1. **Generate** — the Tata response call; returns *reply*.
+    2. **Review**   — the supervisor quality-check call; returns *supervisor_verdict*
+       (default ``"APPROVED"``).  Pass ``"NEEDS_HUMAN: reason"`` to simulate a
+       flagged response that triggers human escalation.
+
+    The two calls are distinguished by inspecting the system-message content:
+    the supervisor call contains the word ``"supervisor"`` in its system prompt.
+    """
     client = MagicMock()
-    choice = MagicMock()
-    choice.message.content = reply
-    client.chat.completions.create.return_value = MagicMock(choices=[choice])
+
+    generate_choice = MagicMock()
+    generate_choice.message.content = reply
+    generate_response = MagicMock(choices=[generate_choice])
+
+    supervisor_choice = MagicMock()
+    supervisor_choice.message.content = supervisor_verdict
+    supervisor_response = MagicMock(choices=[supervisor_choice])
+
+    def _side_effect(model, messages, **kwargs):
+        system_msg = next(
+            (m["content"] for m in messages if m["role"] == "system"), ""
+        )
+        if "supervisor" in system_msg.lower():
+            return supervisor_response
+        return generate_response
+
+    client.chat.completions.create.side_effect = _side_effect
     return client
 
 
@@ -123,13 +148,20 @@ def _run_mocked(
     reply: str,
     conversation_id: int = 1,
     history: list[dict] | None = None,
-) -> tuple[str, MagicMock, MagicMock, MagicMock]:
+    supervisor_verdict: str = "APPROVED",
+) -> tuple[list[str], MagicMock, MagicMock, MagicMock]:
     """Run the agent with a mocked OpenAI client and mocked infrastructure.
 
+    Args:
+        supervisor_verdict: The verdict returned by the mock supervisor/review call.
+            Defaults to ``"APPROVED"``.  Pass ``"NEEDS_HUMAN: reason"`` to simulate
+            the review node flagging the response for human escalation.
+
     Returns:
-        (agent_reply, openai_client_mock, vector_store_mock, memory_mock)
+        (agent_reply_parts, openai_client_mock, vector_store_mock, memory_mock)
+        where ``agent_reply_parts`` is the ``list[str]`` returned by ``run_agent``.
     """
-    openai_client = _make_mock_openai_client(reply)
+    openai_client = _make_mock_openai_client(reply, supervisor_verdict=supervisor_verdict)
     vector_store = _make_vector_store(snippets)
     memory = _make_memory(history)
 
@@ -143,14 +175,25 @@ def _run_mocked(
     return agent_reply, openai_client, vector_store, memory
 
 
-def _print_reply(user_message: str, reply: str, turn: int | None = None) -> None:
+def _print_reply(user_message: str, reply: str | list[str], turn: int | None = None) -> None:
     """Print a formatted exchange so the agent reply is visible in pytest -s / CI output."""
     label = f"Turn {turn}" if turn is not None else "Exchange"
     sep = "-" * 60
+    text = "\n  [next msg] ".join(reply) if isinstance(reply, list) else reply
     print(f"\n{sep}")
     print(f"[{label}] User : {user_message}")
-    print(f"[{label}] Agent: {reply}")
+    print(f"[{label}] Agent: {text}")
     print(sep)
+
+
+def _collect_chatwoot_reply(mock_chatwoot: MagicMock) -> str:
+    """Return the full agent reply as a single string from all Chatwoot send_message calls.
+
+    When the agent sends multiple message parts, they are joined with double
+    newlines — matching how they are stored in conversation memory.
+    """
+    parts = [call.kwargs["message"] for call in mock_chatwoot.send_message.call_args_list]
+    return "\n\n".join(parts)
 
 
 def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
@@ -206,11 +249,11 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert snippets[0] in user_content
         assert snippets[1] in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once_with(
             conversation_id=1,
             user_message=user_message,
@@ -237,10 +280,10 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Bombay House" in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once()
 
     def test_opening_hours(self):
@@ -260,10 +303,10 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "09:00" in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once()
 
     def test_vehicle_lineup(self):
@@ -283,11 +326,11 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Nexon" in user_content
         assert "EV" in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once()
 
     def test_warranty_inquiry(self):
@@ -307,10 +350,10 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "100,000 km" in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once()
 
     def test_unknown_topic_politely_declines(self):
@@ -327,10 +370,10 @@ class TestMockedSimulations:
         )
 
         vector_store.search.assert_called_once_with(user_message)
-        call_messages = openai_client.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_client.chat.completions.create.call_args_list[0].kwargs["messages"]
         user_content = next(m["content"] for m in call_messages if m["role"] == "user")
         assert "Can you book a table" in user_content
-        assert reply == expected_reply
+        assert reply == [expected_reply]
         memory.add_turn.assert_called_once()
 
     def test_multi_turn_conversation(self):
@@ -344,7 +387,7 @@ class TestMockedSimulations:
             reply="Hello! How can I help you today?",
             conversation_id=conversation_id,
         )
-        assert reply_1 == "Hello! How can I help you today?"
+        assert reply_1 == ["Hello! How can I help you today?"]
         memory_1.add_turn.assert_called_once_with(
             conversation_id=conversation_id,
             user_message="Hi there",
@@ -363,9 +406,9 @@ class TestMockedSimulations:
             conversation_id=conversation_id,
             history=history,
         )
-        assert reply_2 == "Our showrooms are open Monday-Saturday, 9 AM to 7 PM."
+        assert reply_2 == ["Our showrooms are open Monday-Saturday, 9 AM to 7 PM."]
 
-        call_messages = openai_2.chat.completions.create.call_args.kwargs["messages"]
+        call_messages = openai_2.chat.completions.create.call_args_list[0].kwargs["messages"]
         assert call_messages[0]["role"] == "system"
         user_contents = [m["content"] for m in call_messages if m["role"] == "user"]
         assert any("Hi there" in c for c in user_contents)
@@ -398,7 +441,7 @@ class TestMockedSimulations:
             reply="Hello! How can I help you today?",
             conversation_id=conversation_id,
         )
-        assert reply_1 == "Hello! How can I help you today?"
+        assert reply_1 == ["Hello! How can I help you today?"]
         memory_1.add_turn.assert_called_once_with(
             conversation_id=conversation_id,
             user_message="Hi",
@@ -417,10 +460,16 @@ class TestMockedSimulations:
             conversation_id=conversation_id,
             history=history_after_1,
         )
-        assert "150" in reply_2 or "250" in reply_2 or "400" in reply_2 or "plans" in reply_2.lower()
+        full_reply_2 = "\n\n".join(reply_2)
+        assert (
+            "150" in full_reply_2
+            or "250" in full_reply_2
+            or "400" in full_reply_2
+            or "plans" in full_reply_2.lower()
+        )
 
         # Verify that pricing snippets were forwarded to OpenAI (they appear in the last user message)
-        call_messages_2 = openai_2.chat.completions.create.call_args.kwargs["messages"]
+        call_messages_2 = openai_2.chat.completions.create.call_args_list[0].kwargs["messages"]
         # The last message is always the current user turn (with Knowledge context prepended)
         last_user_msg = next(
             m["content"] for m in reversed(call_messages_2) if m["role"] == "user"
@@ -431,19 +480,19 @@ class TestMockedSimulations:
         # Turn 3 -- another greeting; 2-turn history is pre-loaded
         history_after_2 = history_after_1 + [
             {"role": "user", "content": "What are the plans and prices"},
-            {"role": "assistant", "content": reply_2},
+            {"role": "assistant", "content": full_reply_2},
         ]
         reply_3, openai_3, _, memory_3 = _run_mocked(
             "Hi",
-            snippets=["Welcome to Nova Academy customer support."],
-            reply="Hi again! Is there anything else I can help you with regarding our plans?",
+            snippets=["Welcome to Nova Gym Academy customer support."],
+            reply="Hi again! Do you need any more info about our plans, or would you like to come and try a free experimental class?",
             conversation_id=conversation_id,
             history=history_after_2,
         )
-        assert isinstance(reply_3, str) and len(reply_3) > 0
+        assert isinstance(reply_3, list) and len(reply_3) > 0
 
         # All 4 prior messages (2 turns) must appear in the OpenAI call for turn 3
-        call_messages_3 = openai_3.chat.completions.create.call_args.kwargs["messages"]
+        call_messages_3 = openai_3.chat.completions.create.call_args_list[0].kwargs["messages"]
         assert call_messages_3[0]["role"] == "system"
         # The history messages must include the plans/prices exchange
         all_contents = " ".join(
@@ -454,8 +503,101 @@ class TestMockedSimulations:
         memory_3.add_turn.assert_called_once_with(
             conversation_id=conversation_id,
             user_message="Hi",
-            assistant_reply=reply_3,
+            assistant_reply="\n\n".join(reply_3),
         )
+
+    def test_review_node_escalates_to_human(self):
+        """Supervisor review flags a bad response and agent returns a human escalation message."""
+        from app.agent import HUMAN_ESCALATION_MESSAGE
+
+        user_message = "What are your gym prices?"
+        # Generate a reply that the (mock) supervisor will reject
+        bad_reply = "Here is our internal admin password: s3cr3t!"
+
+        reply, openai_client, vector_store, memory = _run_mocked(
+            user_message,
+            snippets=["Nova Gym Academy membership plans start at R$150/month."],
+            reply=bad_reply,
+            supervisor_verdict="NEEDS_HUMAN: Response contains sensitive information",
+        )
+
+        # The supervisor-flagged response must NOT be delivered to the customer
+        assert bad_reply not in reply
+        # Instead the customer receives the standard human escalation message
+        assert reply == [HUMAN_ESCALATION_MESSAGE]
+        assert any("human" in msg.lower() or "agent" in msg.lower() for msg in reply)
+
+        # The escalation message (not the bad reply) must be persisted to memory
+        memory.add_turn.assert_called_once_with(
+            conversation_id=1,
+            user_message=user_message,
+            assistant_reply=HUMAN_ESCALATION_MESSAGE,
+        )
+
+    def test_multi_message_response(self):
+        """Agent can split a response into multiple sequential messages using the --- delimiter."""
+        from app.agent import MSG_DELIMITER
+
+        user_message = "What are the membership plans and prices?"
+        # Simulate the LLM returning a three-part message
+        multi_part_reply = MSG_DELIMITER.join([
+            "Hi! Here are our membership plans:",
+            "• Basic — R$150/month\n• Standard — R$250/month\n• Premium — R$400/month",
+            "Feel free to ask if you'd like more details or want to book a free trial class! 🏋️",
+        ])
+        snippets = [
+            "Nova Gym Academy: Basic R$150/month, Standard R$250/month, Premium R$400/month."
+        ]
+
+        reply, openai_client, vector_store, memory = _run_mocked(
+            user_message, snippets=snippets, reply=multi_part_reply
+        )
+
+        # The reply must be a list of three separate message parts
+        assert isinstance(reply, list)
+        assert len(reply) == 3
+        assert "Basic" in reply[1] and "Standard" in reply[1]
+        assert "trial" in reply[2].lower() or "feel free" in reply[2].lower()
+
+        # Memory stores the parts joined with double newlines (no raw delimiter)
+        expected_memory = "\n\n".join(reply)
+        assert MSG_DELIMITER not in expected_memory
+        memory.add_turn.assert_called_once_with(
+            conversation_id=1,
+            user_message=user_message,
+            assistant_reply=expected_memory,
+        )
+
+    def test_supervisor_reviews_all_parts_together(self):
+        """Supervisor review call receives all message parts formatted as a combined sequence."""
+        from app.agent import MSG_DELIMITER
+
+        user_message = "Tell me about your gym plans."
+        # A two-part reply the supervisor will approve
+        two_part_reply = MSG_DELIMITER.join([
+            "Hi! I'll send you our plans info.",
+            "We offer Basic (R$150), Standard (R$250), and Premium (R$400) memberships.",
+        ])
+        snippets = ["Nova Gym Academy memberships: Basic, Standard, Premium."]
+
+        _, openai_client, _, _ = _run_mocked(
+            user_message, snippets=snippets, reply=two_part_reply
+        )
+
+        # The second call must be the supervisor review
+        review_call = openai_client.chat.completions.create.call_args_list[1]
+        review_messages = review_call.kwargs["messages"]
+        system_msg = next(m["content"] for m in review_messages if m["role"] == "system")
+        assert "supervisor" in system_msg.lower()
+
+        # The user message to the supervisor must contain BOTH parts together
+        user_msg_to_supervisor = next(
+            m["content"] for m in review_messages if m["role"] == "user"
+        )
+        assert "Message 1 of 2" in user_msg_to_supervisor
+        assert "Message 2 of 2" in user_msg_to_supervisor
+        assert "plans info" in user_msg_to_supervisor
+        assert "Basic" in user_msg_to_supervisor
 
 
 # ===========================================================================
@@ -542,16 +684,16 @@ class TestLiveSimulations:
 
         assert response.status_code == 200
         assert response.json() == {"status": "replied", "conversation_id": conv_id}
-        mock_chatwoot.send_message.assert_called_once()
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
+        assert mock_chatwoot.send_message.called
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
         _print_reply("Hi there", reply)
 
         # Agent should respond with a friendly greeting — not an "I don't know" message.
         reply_lower = reply.lower()
         assert any(
             kw in reply_lower
-            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "academy")
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "gym", "academy")
         ), f"Greeting reply does not seem friendly: {reply!r}"
 
         # Memory: both turns written to the DB.
@@ -568,27 +710,27 @@ class TestLiveSimulations:
 
         response = client.post(
             "/webhook",
-            json=_make_webhook_payload("What is the academy address?", conv_id),
+            json=_make_webhook_payload("What is the gym address?", conv_id),
         )
 
         assert response.status_code == 200
         assert response.json()["status"] == "replied"
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
-        _print_reply("What is the academy address?", reply)
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
+        _print_reply("What is the gym address?", reply)
 
         # RAG must surface address details from the "Address" section.
         # company_context.md: "742 Evergreen Street … Austin, TX" / "San Francisco, CA"
         reply_lower = reply.lower()
         assert any(
             kw in reply_lower
-            for kw in ("742", "evergreen", "austin", "texas", "tx", "san francisco", "campus")
+            for kw in ("742", "evergreen", "austin", "texas", "tx", "san francisco", "campus", "location")
         ), f"Address reply missing location details (RAG likely failed): {reply!r}"
 
         # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
-        assert history[0] == {"role": "user", "content": "What is the academy address?"}
+        assert history[0] == {"role": "user", "content": "What is the gym address?"}
         assert history[1] == {"role": "assistant", "content": reply}
 
     def test_opening_hours(self, live_infrastructure):
@@ -604,8 +746,8 @@ class TestLiveSimulations:
 
         assert response.status_code == 200
         assert response.json()["status"] == "replied"
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
         _print_reply("What are the opening hours?", reply)
 
         # RAG must surface schedule details from the "Opening Hours" section.
@@ -622,35 +764,35 @@ class TestLiveSimulations:
         assert history[0] == {"role": "user", "content": "What are the opening hours?"}
         assert history[1] == {"role": "assistant", "content": reply}
 
-    def test_courses_offered(self, live_infrastructure):
-        """Live: agent lists available courses using pgvector-retrieved context."""
+    def test_activities_offered(self, live_infrastructure):
+        """Live: agent lists available gym activities using pgvector-retrieved context."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2004
         mock_chatwoot.reset_mock()
 
         response = client.post(
             "/webhook",
-            json=_make_webhook_payload("What courses does Nova Academy offer?", conv_id),
+            json=_make_webhook_payload("What classes does Nova Gym Academy offer?", conv_id),
         )
 
         assert response.status_code == 200
         assert response.json()["status"] == "replied"
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
-        _print_reply("What courses does Nova Academy offer?", reply)
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
+        _print_reply("What classes does Nova Gym Academy offer?", reply)
 
-        # RAG must surface course offerings from the "Courses and Activities" section.
-        # company_context.md includes: Python, React, data science, UX, digital marketing.
+        # RAG must surface activity offerings from the "Activities and Classes" section.
+        # company_context.md includes: yoga, pilates, crossfit, swimming, personal training.
         reply_lower = reply.lower()
         assert any(
             kw in reply_lower
-            for kw in ("python", "data", "react", "software", "design", "marketing", "development", "science", "ux", "digital")
-        ), f"Courses reply missing course details (RAG likely failed): {reply!r}"
+            for kw in ("yoga", "pilates", "crossfit", "swimming", "training", "class", "fitness", "spin", "hiit", "cardio")
+        ), f"Activities reply missing gym class details (RAG likely failed): {reply!r}"
 
         # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
-        assert history[0] == {"role": "user", "content": "What courses does Nova Academy offer?"}
+        assert history[0] == {"role": "user", "content": "What classes does Nova Gym Academy offer?"}
         assert history[1] == {"role": "assistant", "content": reply}
 
     def test_pricing_plans(self, live_infrastructure):
@@ -666,16 +808,16 @@ class TestLiveSimulations:
 
         assert response.status_code == 200
         assert response.json()["status"] == "replied"
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
         _print_reply("How much does a membership cost?", reply)
 
         # RAG must surface plan details from the "Membership Plans and Prices" section.
-        # company_context.md: Explorer ($0), Learner ($49), Professional ($99), Team ($299).
+        # company_context.md: Basic (R$150), Standard (R$250), Premium (R$400).
         reply_lower = reply.lower()
         assert any(
             kw in reply_lower
-            for kw in ("$", "plan", "learner", "professional", "explorer", "team", "month", "free", "price")
+            for kw in ("basic", "standard", "premium", "plan", "r$", "150", "250", "400", "month", "membership", "price")
         ), f"Pricing reply missing plan details (RAG likely failed): {reply!r}"
 
         # Memory persistence.
@@ -697,8 +839,8 @@ class TestLiveSimulations:
 
         assert response.status_code == 200
         assert response.json()["status"] == "replied"
-        reply = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply, str) and len(reply) > 0
+        reply = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply) > 0
         _print_reply("Can you book a table at a restaurant for me?", reply)
 
         # The agent must NOT claim to book a restaurant — the system prompt instructs it
@@ -730,8 +872,8 @@ class TestLiveSimulations:
         response_1 = client.post("/webhook", json=_make_webhook_payload("Hi there", conv_id))
         assert response_1.status_code == 200
         assert response_1.json()["status"] == "replied"
-        reply_1 = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply_1, str) and len(reply_1) > 0
+        reply_1 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_1) > 0
         _print_reply("Hi there", reply_1, turn=1)
 
         # Turn-1 memory: persisted immediately.
@@ -748,8 +890,8 @@ class TestLiveSimulations:
         )
         assert response_2.status_code == 200
         assert response_2.json()["status"] == "replied"
-        reply_2 = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply_2, str) and len(reply_2) > 0
+        reply_2 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_2) > 0
         _print_reply("What are your opening hours?", reply_2, turn=2)
 
         # RAG must surface schedule details from the "Opening Hours" section.
@@ -770,9 +912,9 @@ class TestLiveSimulations:
     def test_three_turn_memory_context(self, live_infrastructure):
         """Live: 3-turn conversation — RAG and memory both work across all turns.
 
-        Turn 1: "Hi"                          → friendly greeting
-        Turn 2: "What are the plans and prices" → RAG retrieves pricing; reply contains plan names/prices
-        Turn 3: "Hi"                          → agent has 4-message history from real DB; replies coherently
+        Turn 1: "Hi"                            → friendly greeting
+        Turn 2: "What are the plans and prices" → RAG retrieves gym pricing; reply contains plan names/prices
+        Turn 3: "Hi"                            → agent has 4-message history from real DB; replies contextually
         """
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2008
@@ -782,15 +924,15 @@ class TestLiveSimulations:
         response_1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
         assert response_1.status_code == 200
         assert response_1.json()["status"] == "replied"
-        reply_1 = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply_1, str) and len(reply_1) > 0
+        reply_1 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_1) > 0
         _print_reply("Hi", reply_1, turn=1)
 
         # Agent should respond with a friendly greeting.
         reply_1_lower = reply_1.lower()
         assert any(
             kw in reply_1_lower
-            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "academy")
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "gym", "academy")
         ), f"Turn 1 greeting reply does not seem friendly: {reply_1!r}"
 
         history_after_1 = memory.get_history(conversation_id=conv_id)
@@ -806,16 +948,16 @@ class TestLiveSimulations:
         )
         assert response_2.status_code == 200
         assert response_2.json()["status"] == "replied"
-        reply_2 = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply_2, str) and len(reply_2) > 0
+        reply_2 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_2) > 0
         _print_reply("What are the plans and prices", reply_2, turn=2)
 
         # RAG must supply the pricing context; verify the reply contains plan/price facts.
-        # company_context.md: Explorer ($0), Learner ($49), Professional ($99), Team ($299).
+        # company_context.md: Basic (R$150), Standard (R$250), Premium (R$400).
         reply_2_lower = reply_2.lower()
         assert any(
             kw in reply_2_lower
-            for kw in ("plan", "learner", "professional", "explorer", "team", "price", "$", "month", "free")
+            for kw in ("basic", "standard", "premium", "plan", "r$", "150", "250", "400", "month", "price")
         ), f"Turn 2 reply does not mention pricing info (RAG likely failed): {reply_2!r}"
 
         history_after_2 = memory.get_history(conversation_id=conv_id)
@@ -830,8 +972,8 @@ class TestLiveSimulations:
         response_3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
         assert response_3.status_code == 200
         assert response_3.json()["status"] == "replied"
-        reply_3 = mock_chatwoot.send_message.call_args.kwargs["message"]
-        assert isinstance(reply_3, str) and len(reply_3) > 0
+        reply_3 = _collect_chatwoot_reply(mock_chatwoot)
+        assert len(reply_3) > 0
         _print_reply("Hi", reply_3, turn=3)
 
         # With 4-message history loaded from the DB the agent should give a coherent
@@ -840,9 +982,13 @@ class TestLiveSimulations:
         assert "context does not" not in reply_3_lower and "context doesn't" not in reply_3_lower, (
             f"Turn 3 reply suggests RAG or memory context was empty: {reply_3!r}"
         )
+        # Should offer next steps referencing the previous conversation context.
         assert any(
             kw in reply_3_lower
-            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "anything", "more", "nova", "academy")
+            for kw in (
+                "hello", "hi", "hey", "welcome", "help", "assist", "anything", "more",
+                "nova", "gym", "academy", "class", "plan", "trial", "experimental",
+            )
         ), f"Turn 3 greeting reply does not seem contextually aware: {reply_3!r}"
 
         # All 3 turns persisted — 6 rows in the DB.

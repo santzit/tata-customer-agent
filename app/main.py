@@ -108,7 +108,7 @@ async def chatwoot_webhook(
     logger.info("Processing message for conversation %d: %s", conversation_id, user_text[:80])
 
     try:
-        reply = run_agent(
+        reply_parts = run_agent(
             user_message=user_text,
             vector_store=_vector_store,
             conversation_memory=_conversation_memory,
@@ -122,7 +122,8 @@ async def chatwoot_webhook(
         ) from exc
 
     try:
-        _chatwoot_client.send_message(conversation_id=conversation_id, message=reply)
+        for part in reply_parts:
+            _chatwoot_client.send_message(conversation_id=conversation_id, message=part)
     except Exception as exc:
         logger.exception("Failed to send reply to Chatwoot: %s", exc)
         raise HTTPException(
