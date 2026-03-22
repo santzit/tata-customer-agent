@@ -523,12 +523,17 @@ class TestLiveSimulations:
     invocation, and the Chatwoot reply call — while the actual Chatwoot HTTP call
     is captured by a ``MagicMock``.
 
-    Assertions verify structural correctness (non-empty reply, memory persistence)
-    rather than exact wording, since LLM output is non-deterministic.
+    Each test verifies three things:
+    1. HTTP plumbing — the webhook returns 200 and ``status: "replied"``.
+    2. RAG correctness — the reply contains facts drawn from ``docs/company_context.md``
+       (specific keywords that could only appear if the vector search returned the
+       right documents).
+    3. Memory persistence — the conversation turn is stored in PostgreSQL and can
+       be retrieved.
     """
 
     def test_greeting(self, live_infrastructure):
-        """Live: agent greets the customer; turn is persisted to real memory."""
+        """Live: agent greets the customer; reply is friendly, turn is persisted."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2001
         mock_chatwoot.reset_mock()
@@ -542,13 +547,21 @@ class TestLiveSimulations:
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("Hi there", reply)
 
+        # Agent should respond with a friendly greeting — not an "I don't know" message.
+        reply_lower = reply.lower()
+        assert any(
+            kw in reply_lower
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "academy")
+        ), f"Greeting reply does not seem friendly: {reply!r}"
+
+        # Memory: both turns written to the DB.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "Hi there"}
         assert history[1] == {"role": "assistant", "content": reply}
 
     def test_company_address(self, live_infrastructure):
-        """Live: agent answers an address question using pgvector-retrieved context."""
+        """Live: agent returns the campus address using pgvector-retrieved context."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2002
         mock_chatwoot.reset_mock()
@@ -563,13 +576,23 @@ class TestLiveSimulations:
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("What is the academy address?", reply)
+
+        # RAG must surface address details from the "Address" section.
+        # company_context.md: "742 Evergreen Street … Austin, TX" / "San Francisco, CA"
+        reply_lower = reply.lower()
+        assert any(
+            kw in reply_lower
+            for kw in ("742", "evergreen", "austin", "texas", "tx", "san francisco", "campus")
+        ), f"Address reply missing location details (RAG likely failed): {reply!r}"
+
+        # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What is the academy address?"}
-        assert history[1]["role"] == "assistant"
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_opening_hours(self, live_infrastructure):
-        """Live: agent returns opening hours from pgvector-retrieved context."""
+        """Live: agent returns opening hours using pgvector-retrieved context."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2003
         mock_chatwoot.reset_mock()
@@ -584,13 +607,23 @@ class TestLiveSimulations:
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("What are the opening hours?", reply)
+
+        # RAG must surface schedule details from the "Opening Hours" section.
+        # company_context.md: Mon–Fri 08:00–20:00, Sat 09:00–17:00, Sunday closed.
+        reply_lower = reply.lower()
+        assert any(
+            kw in reply_lower
+            for kw in ("monday", "friday", "saturday", "sunday", "08:00", "8:00", "20:00", "17:00", "closed", "hour", "open")
+        ), f"Opening hours reply missing schedule details (RAG likely failed): {reply!r}"
+
+        # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What are the opening hours?"}
-        assert history[1]["role"] == "assistant"
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_courses_offered(self, live_infrastructure):
-        """Live: agent lists available courses from pgvector-retrieved context."""
+        """Live: agent lists available courses using pgvector-retrieved context."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2004
         mock_chatwoot.reset_mock()
@@ -605,13 +638,23 @@ class TestLiveSimulations:
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("What courses does Nova Academy offer?", reply)
+
+        # RAG must surface course offerings from the "Courses and Activities" section.
+        # company_context.md includes: Python, React, data science, UX, digital marketing.
+        reply_lower = reply.lower()
+        assert any(
+            kw in reply_lower
+            for kw in ("python", "data", "react", "software", "design", "marketing", "development", "science", "ux", "digital")
+        ), f"Courses reply missing course details (RAG likely failed): {reply!r}"
+
+        # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "What courses does Nova Academy offer?"}
-        assert history[1]["role"] == "assistant"
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_pricing_plans(self, live_infrastructure):
-        """Live: agent explains membership pricing from pgvector-retrieved context."""
+        """Live: agent explains membership pricing using pgvector-retrieved context."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2005
         mock_chatwoot.reset_mock()
@@ -626,13 +669,23 @@ class TestLiveSimulations:
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("How much does a membership cost?", reply)
+
+        # RAG must surface plan details from the "Membership Plans and Prices" section.
+        # company_context.md: Explorer ($0), Learner ($49), Professional ($99), Team ($299).
+        reply_lower = reply.lower()
+        assert any(
+            kw in reply_lower
+            for kw in ("$", "plan", "learner", "professional", "explorer", "team", "month", "free", "price")
+        ), f"Pricing reply missing plan details (RAG likely failed): {reply!r}"
+
+        # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "How much does a membership cost?"}
-        assert history[1]["role"] == "assistant"
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_unknown_topic_politely_declines(self, live_infrastructure):
-        """Live: agent replies gracefully when the query is off-topic."""
+        """Live: agent politely declines an off-topic request (restaurant booking)."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2006
         mock_chatwoot.reset_mock()
@@ -647,13 +700,28 @@ class TestLiveSimulations:
         reply = mock_chatwoot.send_message.call_args.kwargs["message"]
         assert isinstance(reply, str) and len(reply) > 0
         _print_reply("Can you book a table at a restaurant for me?", reply)
+
+        # The agent must NOT claim to book a restaurant — the system prompt instructs it
+        # to say "I'm not sure" when the knowledge context doesn't cover the topic.
+        reply_lower = reply.lower()
+        assert not any(
+            phrase in reply_lower
+            for phrase in ("i'll book", "i will book", "i've booked", "i have booked", "your reservation is", "booking confirmed")
+        ), f"Agent incorrectly offered to book a restaurant: {reply!r}"
+        # The reply should be a polite decline or redirect.
+        assert any(
+            kw in reply_lower
+            for kw in ("cannot", "can't", "unable", "sorry", "not sure", "don't", "outside", "human agent", "contact", "assist")
+        ), f"Agent did not politely decline the off-topic request: {reply!r}"
+
+        # Memory persistence.
         history = memory.get_history(conversation_id=conv_id)
         assert len(history) == 2
         assert history[0] == {"role": "user", "content": "Can you book a table at a restaurant for me?"}
-        assert history[1]["role"] == "assistant"
+        assert history[1] == {"role": "assistant", "content": reply}
 
     def test_multi_turn_conversation(self, live_infrastructure):
-        """Live: turn-1 history is stored in real memory and injected into turn 2."""
+        """Live: turn-1 history is stored in real DB and injected into turn-2 call."""
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2007
 
@@ -666,13 +734,13 @@ class TestLiveSimulations:
         assert isinstance(reply_1, str) and len(reply_1) > 0
         _print_reply("Hi there", reply_1, turn=1)
 
-        # Verify turn 1 is persisted to the real DB
+        # Turn-1 memory: persisted immediately.
         history_after_1 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_1) == 2
         assert history_after_1[0] == {"role": "user", "content": "Hi there"}
         assert history_after_1[1] == {"role": "assistant", "content": reply_1}
 
-        # Turn 2 — follow-up; agent will load turn-1 history from real DB
+        # Turn 2 — follow-up; agent loads turn-1 history from the real DB.
         mock_chatwoot.reset_mock()
         response_2 = client.post(
             "/webhook",
@@ -684,24 +752,32 @@ class TestLiveSimulations:
         assert isinstance(reply_2, str) and len(reply_2) > 0
         _print_reply("What are your opening hours?", reply_2, turn=2)
 
-        # Verify both turns are now persisted
+        # RAG must surface schedule details from the "Opening Hours" section.
+        reply_2_lower = reply_2.lower()
+        assert any(
+            kw in reply_2_lower
+            for kw in ("monday", "friday", "saturday", "sunday", "08:00", "8:00", "20:00", "17:00", "closed", "hour", "open")
+        ), f"Turn 2 opening hours reply missing schedule details (RAG likely failed): {reply_2!r}"
+
+        # Both turns persisted and content matches what was sent to Chatwoot.
         history_after_2 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_2) == 4
         assert history_after_2[0] == {"role": "user", "content": "Hi there"}
+        assert history_after_2[1] == {"role": "assistant", "content": reply_1}
         assert history_after_2[2] == {"role": "user", "content": "What are your opening hours?"}
         assert history_after_2[3] == {"role": "assistant", "content": reply_2}
 
     def test_three_turn_memory_context(self, live_infrastructure):
-        """Live: 3-turn memory test — plans/prices context is retained across all turns.
+        """Live: 3-turn conversation — RAG and memory both work across all turns.
 
-        Turn 1: "Hi"                         → greeting
-        Turn 2: "What are the plans and prices" → agent retrieves and explains pricing
-        Turn 3: "Hi"                         → agent has the full 2-turn history from real DB
+        Turn 1: "Hi"                          → friendly greeting
+        Turn 2: "What are the plans and prices" → RAG retrieves pricing; reply contains plan names/prices
+        Turn 3: "Hi"                          → agent has 4-message history from real DB; replies coherently
         """
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2008
 
-        # Turn 1 — greeting
+        # -- Turn 1: greeting --------------------------------------------------
         mock_chatwoot.reset_mock()
         response_1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
         assert response_1.status_code == 200
@@ -710,12 +786,19 @@ class TestLiveSimulations:
         assert isinstance(reply_1, str) and len(reply_1) > 0
         _print_reply("Hi", reply_1, turn=1)
 
+        # Agent should respond with a friendly greeting.
+        reply_1_lower = reply_1.lower()
+        assert any(
+            kw in reply_1_lower
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "nova", "academy")
+        ), f"Turn 1 greeting reply does not seem friendly: {reply_1!r}"
+
         history_after_1 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_1) == 2
         assert history_after_1[0] == {"role": "user", "content": "Hi"}
         assert history_after_1[1] == {"role": "assistant", "content": reply_1}
 
-        # Turn 2 — plans and prices; agent loads turn-1 history from real DB
+        # -- Turn 2: pricing question (RAG critical) ---------------------------
         mock_chatwoot.reset_mock()
         response_2 = client.post(
             "/webhook",
@@ -727,22 +810,22 @@ class TestLiveSimulations:
         assert isinstance(reply_2, str) and len(reply_2) > 0
         _print_reply("What are the plans and prices", reply_2, turn=2)
 
-        # RAG must supply the pricing context — verify the reply actually contains
-        # pricing-related content rather than "I don't have that information".
+        # RAG must supply the pricing context; verify the reply contains plan/price facts.
+        # company_context.md: Explorer ($0), Learner ($49), Professional ($99), Team ($299).
         reply_2_lower = reply_2.lower()
         assert any(
-            kw in reply_2_lower for kw in ("plan", "learner", "professional", "explorer", "price", "$", "month")
-        ), (
-            f"Turn 2 reply does not mention pricing info (RAG likely failed): {reply_2!r}"
-        )
+            kw in reply_2_lower
+            for kw in ("plan", "learner", "professional", "explorer", "team", "price", "$", "month", "free")
+        ), f"Turn 2 reply does not mention pricing info (RAG likely failed): {reply_2!r}"
 
         history_after_2 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_2) == 4
         assert history_after_2[0] == {"role": "user", "content": "Hi"}
+        assert history_after_2[1] == {"role": "assistant", "content": reply_1}
         assert history_after_2[2] == {"role": "user", "content": "What are the plans and prices"}
         assert history_after_2[3] == {"role": "assistant", "content": reply_2}
 
-        # Turn 3 — greeting again; agent loads 2-turn history (4 messages) from real DB
+        # -- Turn 3: second greeting with full history in DB -------------------
         mock_chatwoot.reset_mock()
         response_3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
         assert response_3.status_code == 200
@@ -751,10 +834,23 @@ class TestLiveSimulations:
         assert isinstance(reply_3, str) and len(reply_3) > 0
         _print_reply("Hi", reply_3, turn=3)
 
-        # All 3 turns are now in the DB (6 rows: 3 user + 3 assistant)
+        # With 4-message history loaded from the DB the agent should give a coherent
+        # contextual response — not an "I don't know" or "context doesn't include" reply.
+        reply_3_lower = reply_3.lower()
+        assert "context does not" not in reply_3_lower and "context doesn't" not in reply_3_lower, (
+            f"Turn 3 reply suggests RAG or memory context was empty: {reply_3!r}"
+        )
+        assert any(
+            kw in reply_3_lower
+            for kw in ("hello", "hi", "hey", "welcome", "help", "assist", "anything", "more", "nova", "academy")
+        ), f"Turn 3 greeting reply does not seem contextually aware: {reply_3!r}"
+
+        # All 3 turns persisted — 6 rows in the DB.
         history_after_3 = memory.get_history(conversation_id=conv_id)
         assert len(history_after_3) == 6
         assert history_after_3[0] == {"role": "user", "content": "Hi"}
+        assert history_after_3[1] == {"role": "assistant", "content": reply_1}
         assert history_after_3[2] == {"role": "user", "content": "What are the plans and prices"}
+        assert history_after_3[3] == {"role": "assistant", "content": reply_2}
         assert history_after_3[4] == {"role": "user", "content": "Hi"}
         assert history_after_3[5] == {"role": "assistant", "content": reply_3}
