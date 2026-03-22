@@ -1,0 +1,14 @@
+version: "3.9"
+
+# Tata agent relies on the PostgreSQL + pgvector instance that Chatwoot already
+# provides.  Set POSTGRES_DSN in your .env to point at that database.
+# The agent does NOT start its own Postgres container.
+
+services:
+  tata-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
