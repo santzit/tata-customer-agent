@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "tata_knowledge"
+    qdrant_memory_collection: str = "tata_conversations"
+    memory_max_turns: int = 10  # number of past conversation turns to include
 
     # Chatwoot
     chatwoot_base_url: str = "http://localhost:3000"

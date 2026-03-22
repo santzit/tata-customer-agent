@@ -27,7 +27,9 @@ SYSTEM_PROMPT = (
 class AgentState(TypedDict):
     """State passed between LangGraph nodes."""
 
+    conversation_id: int
     user_message: str
+    history: Annotated[list[dict[str, str]], "Previous conversation turns (OpenAI message format)"]
     context_docs: Annotated[list[dict], "Retrieved knowledge snippets"]
     response: str
 
@@ -35,6 +37,12 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+
+
+def load_history_node(state: AgentState, *, conversation_memory: Any) -> AgentState:
+    """Load previous conversation turns from Qdrant memory."""
+    history = conversation_memory.get_history(state["conversation_id"])
+    return {**state, "history": history}
 
 
 def retrieve_node(state: AgentState, *, qdrant_store: Any) -> AgentState:
@@ -45,20 +53,22 @@ def retrieve_node(state: AgentState, *, qdrant_store: Any) -> AgentState:
 
 
 def generate_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
-    """Generate a response using OpenAI with the retrieved context."""
+    """Generate a response using OpenAI with the retrieved context and history."""
     context_text = "\n\n".join(
         doc.get("text", "") for doc in state.get("context_docs", [])
     )
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+    # Build the messages array: system → history → current user message
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(state.get("history", []))
+    messages.append(
         {
             "role": "user",
             "content": (
                 f"Knowledge context:\n{context_text}\n\n"
                 f"User question: {state['user_message']}"
             ),
-        },
-    ]
+        }
+    )
     completion = openai_client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
@@ -68,16 +78,35 @@ def generate_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
     return {**state, "response": response}
 
 
+def save_turn_node(state: AgentState, *, conversation_memory: Any) -> AgentState:
+    """Persist the current user message and agent reply to memory."""
+    conversation_memory.add_turn(
+        conversation_id=state["conversation_id"],
+        user_message=state["user_message"],
+        assistant_reply=state["response"],
+    )
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
 
 
-def build_agent(qdrant_store: Any, openai_client: OpenAI | None = None) -> Any:
+def build_agent(
+    qdrant_store: Any,
+    conversation_memory: Any,
+    openai_client: OpenAI | None = None,
+) -> Any:
     """Build and compile the LangGraph workflow.
+
+    The graph runs four nodes in sequence:
+    ``load_history`` → ``retrieve`` → ``generate`` → ``save_turn``
 
     Args:
         qdrant_store: An instance of :class:`~app.qdrant_store.QdrantStore`.
+        conversation_memory: An instance of
+            :class:`~app.conversation_memory.ConversationMemory`.
         openai_client: Optional OpenAI client; a default one is created if omitted.
 
     Returns:
@@ -87,7 +116,10 @@ def build_agent(qdrant_store: Any, openai_client: OpenAI | None = None) -> Any:
 
     graph = StateGraph(AgentState)
 
-    # Bind dependencies via closures so nodes are plain callables
+    graph.add_node(
+        "load_history",
+        lambda state: load_history_node(state, conversation_memory=conversation_memory),
+    )
     graph.add_node(
         "retrieve",
         lambda state: retrieve_node(state, qdrant_store=qdrant_store),
@@ -96,10 +128,16 @@ def build_agent(qdrant_store: Any, openai_client: OpenAI | None = None) -> Any:
         "generate",
         lambda state: generate_node(state, openai_client=client),
     )
+    graph.add_node(
+        "save_turn",
+        lambda state: save_turn_node(state, conversation_memory=conversation_memory),
+    )
 
-    graph.set_entry_point("retrieve")
+    graph.set_entry_point("load_history")
+    graph.add_edge("load_history", "retrieve")
     graph.add_edge("retrieve", "generate")
-    graph.add_edge("generate", END)
+    graph.add_edge("generate", "save_turn")
+    graph.add_edge("save_turn", END)
 
     return graph.compile()
 
@@ -109,20 +147,31 @@ def build_agent(qdrant_store: Any, openai_client: OpenAI | None = None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def run_agent(user_message: str, qdrant_store: Any, openai_client: OpenAI | None = None) -> str:
+def run_agent(
+    user_message: str,
+    qdrant_store: Any,
+    conversation_memory: Any,
+    conversation_id: int = 0,
+    openai_client: OpenAI | None = None,
+) -> str:
     """Run the agent and return the generated reply text.
 
     Args:
         user_message: The message received from the user/Chatwoot.
         qdrant_store: Configured :class:`~app.qdrant_store.QdrantStore`.
+        conversation_memory: Configured
+            :class:`~app.conversation_memory.ConversationMemory`.
+        conversation_id: Chatwoot conversation ID (used to load/save history).
         openai_client: Optional pre-configured OpenAI client.
 
     Returns:
         The agent's reply as a plain string.
     """
-    agent = build_agent(qdrant_store, openai_client)
+    agent = build_agent(qdrant_store, conversation_memory, openai_client)
     initial_state: AgentState = {
+        "conversation_id": conversation_id,
         "user_message": user_message,
+        "history": [],
         "context_docs": [],
         "response": "",
     }

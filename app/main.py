@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from app.agent import run_agent
 from app.chatwoot import ChatwootClient
 from app.config import settings
+from app.conversation_memory import ConversationMemory
 from app.qdrant_store import QdrantStore
 
 logging.basicConfig(level=logging.INFO)
@@ -19,18 +20,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _qdrant_store: QdrantStore | None = None
+_conversation_memory: ConversationMemory | None = None
 _chatwoot_client: ChatwootClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global _qdrant_store, _chatwoot_client
+    global _qdrant_store, _conversation_memory, _chatwoot_client
     _qdrant_store = QdrantStore()
+    _conversation_memory = ConversationMemory()
     _chatwoot_client = ChatwootClient()
-    try:
-        _qdrant_store.ensure_collection()
-    except Exception as exc:
-        logger.warning("Could not connect to Qdrant at startup: %s", exc)
+    for store in (_qdrant_store, _conversation_memory):
+        try:
+            store.ensure_collection()
+        except Exception as exc:
+            logger.warning("Could not connect to Qdrant at startup: %s", exc)
     yield
 
 
@@ -104,7 +108,12 @@ async def chatwoot_webhook(
     logger.info("Processing message for conversation %d: %s", conversation_id, user_text[:80])
 
     try:
-        reply = run_agent(user_message=user_text, qdrant_store=_qdrant_store)
+        reply = run_agent(
+            user_message=user_text,
+            qdrant_store=_qdrant_store,
+            conversation_memory=_conversation_memory,
+            conversation_id=conversation_id,
+        )
     except Exception as exc:
         logger.exception("Agent error: %s", exc)
         raise HTTPException(

@@ -6,7 +6,6 @@ run offline with no real API keys.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +51,16 @@ def mock_qdrant_store():
 
 
 @pytest.fixture()
+def mock_conversation_memory():
+    """Return a mock ConversationMemory."""
+    memory = MagicMock()
+    memory.get_history.return_value = []
+    memory.add_turn.return_value = None
+    memory.ensure_collection.return_value = None
+    return memory
+
+
+@pytest.fixture()
 def mock_openai_client():
     """Return a mock OpenAI client that returns a canned chat completion."""
     client = MagicMock()
@@ -70,19 +79,20 @@ def mock_chatwoot_client():
 
 
 @pytest.fixture()
-def test_client(mock_qdrant_store, mock_openai_client, mock_chatwoot_client):
+def test_client(mock_qdrant_store, mock_conversation_memory, mock_openai_client, mock_chatwoot_client):
     """Build a FastAPI TestClient with all external services mocked."""
     with (
         patch("app.main._qdrant_store", mock_qdrant_store),
+        patch("app.main._conversation_memory", mock_conversation_memory),
         patch("app.main._chatwoot_client", mock_chatwoot_client),
         patch("app.agent.OpenAI", return_value=mock_openai_client),
     ):
         from app.main import app
 
-        # Also patch run_agent so the whole flow is exercised but uses our mocks
+        # Patch run_agent so the whole flow is exercised but uses our mocks
         with patch(
             "app.main.run_agent",
-            side_effect=lambda user_message, qdrant_store, **kw: (
+            side_effect=lambda user_message, qdrant_store, conversation_memory, conversation_id=0, **kw: (
                 mock_openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": user_message}],
@@ -220,7 +230,7 @@ def test_webhook_accepts_valid_token(test_client, mock_chatwoot_client):
 
 
 def test_agent_run_agent_calls_qdrant_and_openai(
-    mock_qdrant_store, mock_openai_client
+    mock_qdrant_store, mock_conversation_memory, mock_openai_client
 ):
     """run_agent should query Qdrant then call OpenAI and return a string."""
     from app.agent import run_agent
@@ -229,6 +239,8 @@ def test_agent_run_agent_calls_qdrant_and_openai(
         reply = run_agent(
             user_message="Tell me about warranty",
             qdrant_store=mock_qdrant_store,
+            conversation_memory=mock_conversation_memory,
+            conversation_id=42,
             openai_client=mock_openai_client,
         )
 
@@ -237,7 +249,9 @@ def test_agent_run_agent_calls_qdrant_and_openai(
     assert len(reply) > 0
 
 
-def test_agent_uses_retrieved_context(mock_qdrant_store, mock_openai_client):
+def test_agent_uses_retrieved_context(
+    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+):
     """The context from Qdrant must be forwarded to the OpenAI call."""
     from app.agent import run_agent
 
@@ -247,14 +261,132 @@ def test_agent_uses_retrieved_context(mock_qdrant_store, mock_openai_client):
         run_agent(
             user_message="Is Tata Nexon safe?",
             qdrant_store=mock_qdrant_store,
+            conversation_memory=mock_conversation_memory,
+            conversation_id=42,
             openai_client=mock_openai_client,
         )
 
     call_args = mock_openai_client.chat.completions.create.call_args
     messages = call_args.kwargs.get("messages") or call_args.args[0]
-    # The user message passed to OpenAI must include our knowledge snippet
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     assert "Tata Nexon has a 5-star safety rating." in user_content
+
+
+def test_agent_includes_history_in_prompt(
+    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+):
+    """Previous conversation turns must appear in the OpenAI messages array."""
+    from app.agent import run_agent
+
+    mock_conversation_memory.get_history.return_value = [
+        {"role": "user", "content": "What is your name?"},
+        {"role": "assistant", "content": "I am Tata, your support agent."},
+    ]
+
+    with patch("app.agent.OpenAI", return_value=mock_openai_client):
+        run_agent(
+            user_message="Tell me more",
+            qdrant_store=mock_qdrant_store,
+            conversation_memory=mock_conversation_memory,
+            conversation_id=7,
+            openai_client=mock_openai_client,
+        )
+
+    call_args = mock_openai_client.chat.completions.create.call_args
+    messages = call_args.kwargs.get("messages") or call_args.args[0]
+    roles = [m["role"] for m in messages]
+    assert "system" in roles
+    assert roles.count("user") >= 2  # history user turn + current user message
+    assert "assistant" in roles
+
+
+def test_agent_saves_turn_to_memory(
+    mock_qdrant_store, mock_conversation_memory, mock_openai_client
+):
+    """After generating a reply, the agent must persist the turn to memory."""
+    from app.agent import run_agent
+
+    with patch("app.agent.OpenAI", return_value=mock_openai_client):
+        run_agent(
+            user_message="Hello!",
+            qdrant_store=mock_qdrant_store,
+            conversation_memory=mock_conversation_memory,
+            conversation_id=55,
+            openai_client=mock_openai_client,
+        )
+
+    mock_conversation_memory.add_turn.assert_called_once()
+    call_kwargs = mock_conversation_memory.add_turn.call_args.kwargs
+    assert call_kwargs["conversation_id"] == 55
+    assert call_kwargs["user_message"] == "Hello!"
+    assert isinstance(call_kwargs["assistant_reply"], str)
+
+
+# ---------------------------------------------------------------------------
+# Conversation memory unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_memory_get_history_returns_messages():
+    """ConversationMemory.get_history should return messages in order."""
+    mock_qdrant = MagicMock()
+    mock_openai = MagicMock()
+
+    # Simulate two scroll results ordered oldest→newest (reversed by impl)
+    p1 = MagicMock()
+    p1.payload = {"role": "user", "content": "Hi", "timestamp_ms": 1000}
+    p2 = MagicMock()
+    p2.payload = {"role": "assistant", "content": "Hello!", "timestamp_ms": 1001}
+    mock_qdrant.scroll.return_value = ([p2, p1], None)  # desc order from Qdrant
+
+    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+        from app.conversation_memory import ConversationMemory
+
+        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        history = memory.get_history(conversation_id=42)
+
+    # After reversal, oldest message should be first
+    assert history[0]["content"] == "Hi"
+    assert history[1]["content"] == "Hello!"
+
+
+def test_conversation_memory_add_turn_upserts_two_points():
+    """add_turn should upsert exactly two points (user + assistant)."""
+    mock_qdrant = MagicMock()
+
+    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+        from app.conversation_memory import ConversationMemory
+
+        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        memory.add_turn(
+            conversation_id=10,
+            user_message="What is the price?",
+            assistant_reply="The price is X.",
+        )
+
+    mock_qdrant.upsert.assert_called_once()
+    points = mock_qdrant.upsert.call_args.kwargs["points"]
+    assert len(points) == 2
+    roles = {p.payload["role"] for p in points}
+    assert roles == {"user", "assistant"}
+
+
+def test_conversation_memory_history_filters_by_conversation():
+    """get_history must filter by conversation_id."""
+    mock_qdrant = MagicMock()
+    mock_qdrant.scroll.return_value = ([], None)
+
+    with patch("app.conversation_memory.QdrantClient", return_value=mock_qdrant):
+        from app.conversation_memory import ConversationMemory
+
+        memory = ConversationMemory(qdrant_client=mock_qdrant)
+        memory.get_history(conversation_id=99)
+
+    scroll_call = mock_qdrant.scroll.call_args
+    scroll_filter = scroll_call.kwargs.get("scroll_filter") or scroll_call.args[0]
+    condition = scroll_filter.must[0]
+    assert condition.key == "conversation_id"
+    assert condition.match.value == 99
 
 
 # ---------------------------------------------------------------------------
