@@ -24,7 +24,7 @@ SYSTEM_PROMPT = (
     "When a customer sends a simple greeting during an ongoing conversation, provide a "
     "contextual follow-up response that references the previous topic and offers helpful "
     "next steps — for example: 'Is there anything else you'd like to know about our gym "
-    "plans?' or 'Would you like to book a free experimental class?' "
+    "plans?' or 'Would you like to book a free trial class?' "
     "You may split your reply into multiple messages when it improves clarity — for "
     "example, a short intro message, then a detailed content block, then a friendly "
     "closing. Separate each message with a line containing only '---'. "
@@ -70,7 +70,7 @@ def _split_messages(raw: str) -> list[str]:
     ``---``.  Empty parts (e.g. leading/trailing whitespace) are discarded.
     If the response contains no delimiter, it is returned as a single-element list.
     """
-    parts = re.split(r"\n---\n", raw)
+    parts = re.split(re.escape(MSG_DELIMITER), raw)
     return [p.strip() for p in parts if p.strip()]
 
 

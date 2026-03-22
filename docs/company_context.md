@@ -58,8 +58,8 @@ Online support (chat and email) is available 24/7. Live chat response time is un
 - One-on-one personal trainer sessions (available with Standard and Premium plans)
 - Nutrition and wellness coaching (Premium plan)
 
-### Experimental / Trial Class
-New members are invited to attend a **free experimental class** before committing to a membership. This is a great way to try out our facilities and meet our coaches. Book your free trial class through our website or WhatsApp.
+### Trial Class
+New members are invited to attend a **free trial class** before committing to a membership. This is a great way to experience our facilities and meet our coaches. Book your free trial class through our website or WhatsApp.
 
 ## Membership Plans and Prices
 
@@ -69,7 +69,7 @@ New members are invited to attend a **free experimental class** before committin
 | **Standard** | R$250 | R$2,400 | All Basic benefits + 4 personal trainer sessions/month, aquatics access |
 | **Premium** | R$400 | R$3,840 | All Standard benefits + unlimited personal training, nutrition coaching, guest passes |
 
-All plans include a **free experimental class** before signing up. You can upgrade, downgrade, or cancel at any time.
+All plans include a **free trial class** before signing up. You can upgrade, downgrade, or cancel at any time.
 
 ## Cancellation and Refund Policy
 
@@ -86,10 +86,10 @@ Yes, you can upgrade or downgrade at any time. Changes take effect at the start 
 Yes. Students with a valid academic email address or student ID receive 20% off the Standard and Premium plans.
 
 **Do you offer a free trial?**
-Yes! Every new member is welcome to attend one free experimental class to experience our facilities and coaching before committing to a plan.
+Yes! Every new member is welcome to attend one free trial class to experience our facilities and coaching before committing to a plan.
 
 **What should I bring to my first class?**
 Bring comfortable workout clothes, a water bottle, and a towel. Lockers are available on-site. For yoga and pilates, mats are provided.
 
 **How do I sign up?**
-Visit https://nova-gym.com/join, choose your plan, and create an account. You can also contact us via WhatsApp at +1 (555) 234-5679 to book your free experimental class directly.
+Visit https://nova-gym.com/join, choose your plan, and create an account. You can also contact us via WhatsApp at +1 (555) 234-5679 to book your free trial class directly.

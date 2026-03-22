@@ -485,7 +485,7 @@ class TestMockedSimulations:
         reply_3, openai_3, _, memory_3 = _run_mocked(
             "Hi",
             snippets=["Welcome to Nova Gym Academy customer support."],
-            reply="Hi again! Do you need any more info about our plans, or would you like to come and try a free experimental class?",
+            reply="Hi again! Do you need any more info about our plans, or would you like to come and try a free trial class?",
             conversation_id=conversation_id,
             history=history_after_2,
         )
@@ -987,7 +987,7 @@ class TestLiveSimulations:
             kw in reply_3_lower
             for kw in (
                 "hello", "hi", "hey", "welcome", "help", "assist", "anything", "more",
-                "nova", "gym", "academy", "class", "plan", "trial", "experimental",
+                "nova", "gym", "academy", "class", "plan", "trial",
             )
         ), f"Turn 3 greeting reply does not seem contextually aware: {reply_3!r}"
 
