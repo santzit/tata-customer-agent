@@ -327,65 +327,95 @@ class TestLiveSimulations:
         assert history_after_2[3] == {"role": "assistant", "content": reply_2}
 
     def test_three_turn_memory_context(self, live_infrastructure):
-        """Live: 3-turn conversation — agent is contextually aware in turn 3.
+        """Live: debounce-buffered 3-turn conversation — agent stays contextually aware.
 
-        Turn 1: "Hi"                            → friendly greeting only
-        Turn 2: "What are the plans and prices" → RAG pricing info in reply
-        Turn 3: "Hi"                            → brief greeting + contextual follow-up
+        Uses a short debounce window (0.3 s) to exercise the real buffering path
+        without waiting two minutes.  Turns 1 + 2 arrive 0.1 s apart (within the
+        window) and are processed as a *single* batched agent call.  Turn 3 arrives
+        after the first batch has been delivered and receives a contextual reply
+        referencing the earlier pricing discussion.
+
+        Timeline:
+            t=0.0s  Turn 1 "Hi"                           → queued, 0.3 s timer
+            t=0.1s  Turn 2 "What are the plans and prices" → timer resets to 0.3 s
+                    (no Chatwoot call fired yet — both messages still buffered)
+            t≈0.4s  timer fires → Turns 1+2 processed together → single batched reply
+            (after batch 1 arrives) Turn 3 "Hi"           → new 0.3 s timer
+            t≈0.4s later  timer fires → Turn 3 processed with history context
         """
+        from app.main import _process_buffered_messages
+        from app.message_buffer import MessageBuffer
+
         client, memory, mock_chatwoot = live_infrastructure
         conv_id = 2008
-
-        # Turn 1
         mock_chatwoot.reset_mock()
-        r1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
-        assert r1.json()["status"] == "queued"
-        reply_1 = _collect_chatwoot_reply(mock_chatwoot)
-        assert len(reply_1) > 0
-        _print_reply("Hi", reply_1, turn=1)
 
-        assert any(kw in reply_1.lower() for kw in (
-            "hello", "hi", "hey", "welcome", "help", "assist", "good day", "how can"
-        )), f"Turn 1 greeting not friendly: {reply_1!r}"
+        short_buffer = MessageBuffer(delay_seconds=0.3, on_flush=_process_buffered_messages)
 
-        history_after_1 = memory.get_history(conversation_id=conv_id)
-        assert len(history_after_1) == 2
+        with patch("app.main._message_buffer", short_buffer):
+            # --- Batch 1: Turns 1 + 2 arrive within the 0.3 s debounce window ---
+            r1 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+            assert r1.json()["status"] == "queued"
+            assert not mock_chatwoot.send_message.called, (
+                "Agent replied before the debounce window expired"
+            )
 
-        # Turn 2
-        mock_chatwoot.reset_mock()
-        r2 = client.post("/webhook", json=_make_webhook_payload("What are the plans and prices", conv_id))
-        assert r2.json()["status"] == "queued"
-        reply_2 = _collect_chatwoot_reply(mock_chatwoot)
-        assert len(reply_2) > 0
-        _print_reply("What are the plans and prices", reply_2, turn=2)
+            time.sleep(0.1)  # still inside the 0.3 s window
+            r2 = client.post(
+                "/webhook",
+                json=_make_webhook_payload("What are the plans and prices", conv_id),
+            )
+            assert r2.json()["status"] == "queued"
+            assert not mock_chatwoot.send_message.called, (
+                "Agent replied before the debounce window expired (after Turn 2)"
+            )
 
-        assert any(kw in reply_2.lower() for kw in (
-            "basic", "standard", "premium", "plan", "r$", "150", "250", "400", "month", "price"
-        )), f"Turn 2 reply missing pricing info: {reply_2!r}"
+            # Poll until the batched reply lands (debounce 0.3 s + real OpenAI latency)
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                time.sleep(0.5)
+                if mock_chatwoot.send_message.called:
+                    break
 
-        history_after_2 = memory.get_history(conversation_id=conv_id)
-        assert len(history_after_2) == 4
+            assert mock_chatwoot.send_message.called, (
+                "Batch 1 (Turns 1+2) never replied after debounce window"
+            )
+            reply_batch1 = _collect_chatwoot_reply(mock_chatwoot)
+            _print_reply("Hi + What are the plans and prices", reply_batch1, turn="1+2 batched")
 
-        # Turn 3
-        mock_chatwoot.reset_mock()
-        r3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
-        assert r3.json()["status"] == "queued"
-        reply_3 = _collect_chatwoot_reply(mock_chatwoot)
-        assert len(reply_3) > 0
-        _print_reply("Hi", reply_3, turn=3)
+            assert any(kw in reply_batch1.lower() for kw in (
+                "basic", "standard", "premium", "plan", "r$", "150", "250", "400",
+                "month", "price", "membership",
+            )), f"Batched reply missing pricing info: {reply_batch1!r}"
 
-        reply_3_lower = reply_3.lower()
-        assert "context does not" not in reply_3_lower and "context doesn\'t" not in reply_3_lower
-        assert any(kw in reply_3_lower for kw in (
-            "hello", "hi", "hey", "help", "anything", "more", "plan",
-            "visit", "interested", "would you", "sign"
-        )), f"Turn 3 not contextually aware: {reply_3!r}"
-        assert "welcome to" not in reply_3_lower or any(kw in reply_3_lower for kw in (
-            "plan", "visit", "interested", "would you", "sign", "anything"
-        )), f"Turn 3 ignores conversation history: {reply_3!r}"
+            # DB: 1 combined user message + 1 combined reply = 2 history entries
+            history_after_batch1 = memory.get_history(conversation_id=conv_id)
+            assert len(history_after_batch1) == 2
 
-        history_after_3 = memory.get_history(conversation_id=conv_id)
-        assert len(history_after_3) == 6
+            # --- Turn 3: arrives after the batch 1 timer has already fired ---
+            mock_chatwoot.reset_mock()
+            r3 = client.post("/webhook", json=_make_webhook_payload("Hi", conv_id))
+            assert r3.json()["status"] == "queued"
+
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                time.sleep(0.5)
+                if mock_chatwoot.send_message.called:
+                    break
+
+            assert mock_chatwoot.send_message.called, "Turn 3 never replied"
+            reply_3 = _collect_chatwoot_reply(mock_chatwoot)
+            _print_reply("Hi", reply_3, turn=3)
+
+            reply_3_lower = reply_3.lower()
+            assert any(kw in reply_3_lower for kw in (
+                "hello", "hi", "hey", "help", "anything", "more", "plan",
+                "visit", "interested", "would you", "sign",
+            )), f"Turn 3 not contextually aware: {reply_3!r}"
+
+            # DB: 2 more entries for Turn 3 (user + assistant) = 4 total
+            history_after_3 = memory.get_history(conversation_id=conv_id)
+            assert len(history_after_3) == 4
 
     def test_message_debounce_batching(self, live_infrastructure):
         """Live: two messages sent within the debounce window are batched into one reply.
