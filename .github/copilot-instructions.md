@@ -1,5 +1,9 @@
 # Copilot instructions for tata-customer-agent
 
+## Constraints 
+- Do not change the tests (/tests/*), unless specifically instructed to do so.
+- Always run local tests (using pgvector/openai) before committing a new code, to ensure nothing is break
+
 ## Local development prerequisites
 
 Before running tests or the agent locally you need two real services:
@@ -24,17 +28,8 @@ the first time it runs.
 
 ### 2. OpenAI API key
 
-Set `OPENAI_API_KEY` in a `.env` file at the repository root:
+Get OPENAI_API_KEY from secrets.OPENAI_API_KEY (repository key)
 
-```bash
-cp .env.example .env
-# Open .env and fill in OPENAI_API_KEY=sk-...
-```
-
-`conftest.py` loads `.env` via `python-dotenv` at session start, so the key is
-picked up without any shell export. In CI it comes from the repository secret
-`OPENAI_API_KEY` (Settings → Secrets and variables → Actions) — never
-hard-code or commit the key.
 
 ### 3. Running tests
 
