@@ -13,6 +13,7 @@ no ``time.sleep`` required.
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock, patch
 
@@ -41,14 +42,21 @@ def _make_chatwoot_payload(
     return {
         "event": event,
         "id": 1,
-        "message_type": message_type,
         "content": content,
-        "content_type": "text",
+        "created_at": 1234567890,
+        "message_type": message_type,
         "conversation": {
             "id": conversation_id,
-            "display_id": str(conversation_id),
+            "inbox_id": 1,
+            "status": "pending",
+            "contact": {
+                "id": 10,
+                "name": "John Doe",
+                "email": "john@example.com",
+            },
         },
         "account": {"id": 1, "name": "Test Account"},
+        "sender": {"id": 10, "name": "John Doe"},
     }
 
 
@@ -423,6 +431,8 @@ def test_chatwoot_client_sends_post_request():
 
     assert mock_route.called
     assert result["id"] == 1
+    sent_request = mock_route.calls.last.request
+    assert sent_request.headers["authorization"] == "Bearer token-abc"
 
 
 def test_chatwoot_client_raises_on_error():
@@ -444,3 +454,37 @@ def test_chatwoot_client_raises_on_error():
         )
         with pytest.raises(httpx.HTTPStatusError):
             client.send_message(conversation_id=1, message="Hello!")
+
+
+def test_chatwoot_client_handover_posts_to_toggle_status():
+    """ChatwootClient.handover_to_human should POST to the /toggle_status endpoint."""
+    import httpx
+    import respx
+
+    from app.chatwoot import ChatwootClient
+
+    account_id = 5
+    conversation_id = 77
+    client = ChatwootClient(
+        base_url="http://chatwoot.test",
+        api_token="token-abc",
+        account_id=account_id,
+    )
+
+    expected_url = (
+        f"http://chatwoot.test/api/v1/accounts/{account_id}"
+        f"/conversations/{conversation_id}/toggle_status"
+    )
+
+    with respx.mock:
+        mock_route = respx.post(expected_url).mock(
+            return_value=httpx.Response(200, json={"id": conversation_id, "status": "open"})
+        )
+        result = client.handover_to_human(conversation_id=conversation_id)
+
+    assert mock_route.called
+    assert result["status"] == "open"
+    sent_request = mock_route.calls.last.request
+    assert sent_request.headers["authorization"] == "Bearer token-abc"
+    body = json.loads(sent_request.content)
+    assert body == {"status": "open"}
