@@ -77,14 +77,21 @@ def _make_webhook_payload(content: str, conversation_id: int = 1) -> dict:
     return {
         "event": "message_created",
         "id": 1,
-        "message_type": "incoming",
         "content": content,
-        "content_type": "text",
+        "created_at": 1234567890,
+        "message_type": "incoming",
         "conversation": {
             "id": conversation_id,
-            "display_id": str(conversation_id),
+            "inbox_id": 1,
+            "status": "pending",
+            "contact": {
+                "id": 10,
+                "name": "John Doe",
+                "email": "john@example.com",
+            },
         },
         "account": {"id": 1, "name": "Test Account"},
+        "sender": {"id": 10, "name": "John Doe"},
     }
 
 

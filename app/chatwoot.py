@@ -24,7 +24,7 @@ class ChatwootClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "api_access_token": self.api_token,
+            "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json",
         }
 
@@ -84,10 +84,10 @@ class ChatwootClient:
         """
         url = (
             f"{self.base_url}/api/v1/accounts/{self.account_id}"
-            f"/conversations/{conversation_id}"
+            f"/conversations/{conversation_id}/toggle_status"
         )
         logger.info("Handing over conversation %d to a human agent.", conversation_id)
         with httpx.Client(timeout=30) as client:
-            response = client.patch(url, json={"status": "open"}, headers=self._headers())
+            response = client.post(url, json={"status": "open"}, headers=self._headers())
             response.raise_for_status()
             return response.json()
