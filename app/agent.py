@@ -132,13 +132,23 @@ class AgentState(TypedDict):
 def load_history_node(state: AgentState, *, conversation_memory: Any) -> AgentState:
     """Load previous conversation turns from PostgreSQL memory."""
     history = conversation_memory.get_history(state["conversation_id"])
+    logger.info(
+        "Loaded %d history turn(s) for conversation %d",
+        len(history),
+        state["conversation_id"],
+    )
     return {**state, "history": history}
 
 
 def retrieve_node(state: AgentState, *, vector_store: Any) -> AgentState:
     """Retrieve relevant knowledge from the pgvector store."""
     docs = vector_store.search(state["user_message"])
-    logger.debug("Retrieved %d docs for query: %s", len(docs), state["user_message"][:80])
+    logger.info(
+        "Retrieved %d knowledge doc(s) for conversation %d",
+        len(docs),
+        state["conversation_id"],
+    )
+    logger.debug("Query: %s", state["user_message"][:80])
     return {**state, "context_docs": docs}
 
 
@@ -185,10 +195,16 @@ def generate_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
     )
     raw_response = completion.choices[0].message.content or ""
     messages = _split_messages(raw_response)
-    logger.debug(
-        "Generated %d message part(s) (%d chars total)",
+    logger.info(
+        "Generated %d message part(s) for conversation %d (%d chars total)",
         len(messages),
+        state["conversation_id"],
         len(raw_response),
+    )
+    logger.debug(
+        "Agent raw response for conversation %d: %s",
+        state["conversation_id"],
+        raw_response,
     )
     return {**state, "messages": messages}
 
@@ -233,10 +249,15 @@ def review_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
             verdict,
         )
     else:
-        logger.debug(
+        logger.info(
             "Supervisor approved %d message part(s) for conversation %d",
             len(state["messages"]),
             state["conversation_id"],
+        )
+        logger.debug(
+            "Supervisor verdict for conversation %d: %s",
+            state["conversation_id"],
+            verdict,
         )
     return {**state, "needs_human_review": needs_human}
 

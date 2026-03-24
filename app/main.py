@@ -13,7 +13,16 @@ from app.conversation_memory import ConversationMemory
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
-logging.basicConfig(level=logging.INFO)
+_log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+# basicConfig is a no-op when uvicorn has already installed handlers.
+# Explicitly set the level on the root logger and the app namespace so
+# the configured LOG_LEVEL takes effect regardless of launch method.
+logging.getLogger().setLevel(_log_level)
+logging.getLogger("app").setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -47,6 +56,11 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
         conversation_id,
         len(combined_text),
     )
+    logger.debug(
+        "Buffered message content for conversation %d: %s",
+        conversation_id,
+        combined_text,
+    )
     try:
         reply_parts, needs_human = run_agent(
             user_message=combined_text,
@@ -60,12 +74,35 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
         )
         return
 
+    logger.info(
+        "Agent produced %d reply part(s) for conversation %d (needs_human=%s)",
+        len(reply_parts),
+        conversation_id,
+        needs_human,
+    )
     try:
-        for part in reply_parts:
+        for idx, part in enumerate(reply_parts, start=1):
+            logger.debug(
+                "Sending part %d/%d to Chatwoot for conversation %d: %s",
+                idx,
+                len(reply_parts),
+                conversation_id,
+                part[:120],
+            )
             _chatwoot_client.send_message(
                 conversation_id=conversation_id, message=part
             )
+            logger.info(
+                "Sent part %d/%d to Chatwoot for conversation %d",
+                idx,
+                len(reply_parts),
+                conversation_id,
+            )
         if needs_human:
+            logger.info(
+                "Handing off conversation %d to a human agent via Chatwoot.",
+                conversation_id,
+            )
             _chatwoot_client.handover_to_human(conversation_id=conversation_id)
     except Exception as exc:
         logger.exception(
@@ -90,6 +127,22 @@ async def lifespan(application: FastAPI):
             store.ensure_collection()
         except Exception as exc:
             logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
+    logger.info(
+        "Chatwoot client configured: base_url=%r, account_id=%d, api_token_set=%s",
+        settings.chatwoot_base_url,
+        settings.chatwoot_account_id,
+        bool(settings.chatwoot_api_token),
+    )
+    if settings.webhook_token:
+        logger.info(
+            "Webhook token authentication is ENABLED. "
+            "Chatwoot must send the matching token in the X-Chatwoot-Signature header."
+        )
+    else:
+        logger.info(
+            "Webhook token authentication is DISABLED (WEBHOOK_TOKEN is not set). "
+            "All incoming requests will be accepted without token verification."
+        )
     yield
 
 
@@ -107,8 +160,16 @@ def _verify_webhook_token(token: str | None) -> None:
     if not expected:
         return
     if not token:
+        logger.warning(
+            "Webhook request rejected: WEBHOOK_TOKEN is set but the request "
+            "did not include an X-Chatwoot-Signature header."
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     if not hmac.compare_digest(token, expected):
+        logger.warning(
+            "Webhook request rejected: X-Chatwoot-Signature token does not match "
+            "the configured WEBHOOK_TOKEN."
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
@@ -157,8 +218,14 @@ async def chatwoot_webhook(
     _verify_webhook_token(x_chatwoot_signature)
 
     payload: dict = await request.json()
+    logger.debug("Received Chatwoot webhook payload: %s", payload)
 
     if not _is_incoming_customer_message(payload):
+        logger.debug(
+            "Ignoring non-incoming event (event=%r, message_type=%r)",
+            payload.get("event"),
+            payload.get("message_type"),
+        )
         return {"status": "ignored"}
 
     # Real Chatwoot agent bot payload: content and conversation_id are top-level fields.
