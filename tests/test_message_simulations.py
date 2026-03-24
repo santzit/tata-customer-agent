@@ -2,8 +2,9 @@
 
 All tests use real services:
 - OpenAI (chat completions + embeddings) — real API call
-- PostgreSQL/pgvector vector store — real DB, pre-populated from
-  ``docs/company_context.md`` using real OpenAI embeddings
+- PostgreSQL/pgvector vector store — real DB, pre-populated with small
+  article-like knowledge chunks stored directly as pgvector rows (simulating
+  what HelpCenterSync produces from a Chatwoot Help Center)
 - PostgreSQL conversation memory — real DB, turn persisted and verified
 - Chatwoot — simulated by POSTing Chatwoot-format JSON to the ``/webhook``
   endpoint via FastAPI\'s ``TestClient``; the actual Chatwoot HTTP call is
@@ -17,8 +18,6 @@ has been notified — no ``time.sleep`` is needed.
 
 from __future__ import annotations
 
-import pathlib
-import re
 import time
 from unittest.mock import MagicMock, patch
 
@@ -26,25 +25,101 @@ import pytest
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
-# Docs helpers
+# Knowledge articles — stored directly in pgvector, simulating Help Center
+# articles synced via HelpCenterSync.  Each tuple is (article_id, text).
 # ---------------------------------------------------------------------------
 
-_DOCS_DIR = pathlib.Path(__file__).parent.parent / "docs"
-
-
-def _iter_doc_sections() -> list[tuple[str, str]]:
-    """Return (section_id, full_text) pairs for every ## section in company_context.md."""
-    content = (_DOCS_DIR / "company_context.md").read_text(encoding="utf-8")
-    parts = re.split(r"^## ", content, flags=re.MULTILINE)
-    sections = []
-    for part in parts[1:]:
-        lines = part.strip().split("\n", 1)
-        heading = lines[0].strip()
-        body = lines[1].strip() if len(lines) > 1 else ""
-        if body:
-            section_id = re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")
-            sections.append((section_id, f"{heading}\n\n{body}"))
-    return sections
+_KNOWLEDGE_ARTICLES: list[tuple[str, str]] = [
+    (
+        "hc-article-about",
+        "About Nova Gym Academy\n\n"
+        "Nova Gym Academy is a modern fitness center founded in 2018, dedicated to "
+        "helping people achieve their health and wellness goals. We offer a wide "
+        "variety of group classes, personal training sessions, and specialized fitness "
+        "programs for all levels — from complete beginners to seasoned athletes. Our "
+        "mission is to make high-quality fitness accessible, motivating, and fun for everyone.",
+    ),
+    (
+        "hc-article-address",
+        "Address\n\n"
+        "Nova Gym Academy Main Campus\n"
+        "742 Evergreen Street, Suite 400\n"
+        "Austin, TX 78701, USA\n\n"
+        "We also operate a second location at:\n"
+        "200 Innovation Drive, Floor 3\n"
+        "San Francisco, CA 94107, USA",
+    ),
+    (
+        "hc-article-contact",
+        "Contact Information\n\n"
+        "Phone: +1 (555) 234-5678\n"
+        "WhatsApp: +1 (555) 234-5679\n"
+        "Email: support@nova-gym.com\n"
+        "Website: https://nova-gym.com\n\n"
+        "Online support (chat and email) is available 24/7. Live chat response time "
+        "is under 2 minutes during business hours and under 4 hours outside business hours.",
+    ),
+    (
+        "hc-article-hours",
+        "Opening Hours\n\n"
+        "Monday – Friday: 08:00 – 20:00 (CST)\n"
+        "Saturday: 09:00 – 17:00 (CST)\n"
+        "Sunday: Closed\n\n"
+        "Online support (chat and email) is available 24/7.",
+    ),
+    (
+        "hc-article-activities",
+        "Activities and Classes\n\n"
+        "- Yoga — Beginner, Intermediate, and Advanced levels\n"
+        "- Pilates — mat and reformer sessions\n"
+        "- CrossFit — functional high-intensity workouts\n"
+        "- Cardio Dance (Zumba and aerobics)\n"
+        "- Indoor Cycling (Spin classes)\n"
+        "- HIIT (High-Intensity Interval Training)\n"
+        "- Weight Training — guided sessions on the gym floor\n"
+        "- Functional Training — kettlebells, TRX, and resistance bands\n"
+        "- Powerlifting and Olympic Lifting coaching\n"
+        "- Swimming lessons — Beginner through Advanced\n"
+        "- Aqua aerobics classes\n"
+        "- Meditation and mindfulness sessions\n"
+        "- Stretching and mobility workshops",
+    ),
+    (
+        "hc-article-plans",
+        "Membership Plans and Prices\n\n"
+        "Basic — R$150/month (R$1,440/year): Unlimited group fitness classes, gym floor access.\n"
+        "Standard — R$250/month (R$2,400/year): All Basic benefits + 4 personal trainer "
+        "sessions/month, aquatics access.\n"
+        "Premium — R$400/month (R$3,840/year): All Standard benefits + unlimited personal "
+        "training, nutrition coaching, guest passes.\n\n"
+        "All plans include a free trial class before signing up. "
+        "You can upgrade, downgrade, or cancel at any time.",
+    ),
+    (
+        "hc-article-cancellation",
+        "Cancellation and Refund Policy\n\n"
+        "Memberships can be cancelled at any time from the member portal or by contacting "
+        "our support team.\n"
+        "A full refund is available within 7 days of the initial payment, provided fewer "
+        "than 2 classes have been attended.\n"
+        "Personal training session bookings may be cancelled up to 24 hours before the "
+        "session for a full refund.",
+    ),
+    (
+        "hc-article-faq",
+        "Frequently Asked Questions\n\n"
+        "Can I switch plans? Yes, you can upgrade or downgrade at any time. "
+        "Changes take effect at the start of the next billing cycle.\n\n"
+        "Is there a student discount? Yes. Students with a valid academic email address "
+        "or student ID receive 20% off the Standard and Premium plans.\n\n"
+        "Do you offer a free trial? Yes! Every new member is welcome to attend one free "
+        "trial class to experience our facilities and coaching before committing to a plan.\n\n"
+        "What should I bring to my first class? Bring comfortable workout clothes, a water "
+        "bottle, and a towel. Lockers are available on-site. For yoga and pilates, mats are provided.\n\n"
+        "How do I sign up? Visit https://nova-gym.com/join, choose your plan, and create "
+        "an account. You can also contact us via WhatsApp at +1 (555) 234-5679.",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +191,8 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
     openai_client = settings.make_openai_client()
     store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=openai_client)
     store.ensure_table()
-    for section_id, text in _iter_doc_sections():
-        store.upsert(section_id, text, {"source": "company_context"})
+    for article_id, text in _KNOWLEDGE_ARTICLES:
+        store.upsert(article_id, text, {"source": "hc-article"})
 
     memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
     memory.ensure_table()
