@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # Set RESPONSE_DELAY_SECONDS=0 to disable buffering (reply immediately).
     response_delay_seconds: float = 120.0
 
+    # Logging
+    # Controls the verbosity of the application log output.
+    # Accepted values (case-insensitive): debug, info, warning, error, critical
+    # Use "debug" to see full incoming payloads, every agent step, and
+    # Chatwoot HTTP responses; "info" for normal operational logs.
+    log_level: str = "info"
+
     def make_openai_client(self):
         """Create an OpenAI client.
 

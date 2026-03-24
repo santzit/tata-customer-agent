@@ -63,7 +63,14 @@ class ChatwootClient:
         with httpx.Client(timeout=30) as client:
             response = client.post(url, json=payload, headers=self._headers())
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(
+                "Message sent to Chatwoot conversation %d (HTTP %d, message_id=%s)",
+                conversation_id,
+                response.status_code,
+                result.get("id"),
+            )
+            return result
 
     def handover_to_human(self, conversation_id: int) -> dict:
         """Hand over a conversation from the bot to a human agent.
@@ -90,4 +97,11 @@ class ChatwootClient:
         with httpx.Client(timeout=30) as client:
             response = client.post(url, json={"status": "open"}, headers=self._headers())
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(
+                "Chatwoot conversation %d handed over to human (HTTP %d, status=%r)",
+                conversation_id,
+                response.status_code,
+                result.get("status"),
+            )
+            return result
