@@ -95,6 +95,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=pr,prefix=pr-
             type=ref,event=branch
             type=ref,event=tag
