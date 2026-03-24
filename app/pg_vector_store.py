@@ -142,6 +142,22 @@ class PgVectorStore:
     # Retrieval
     # ------------------------------------------------------------------
 
+    def count(self) -> int:
+        """Return the number of documents currently indexed in the knowledge store.
+
+        Returns ``-1`` when the table does not yet exist or the database is
+        unreachable (so callers can distinguish "unknown" from "zero").
+        """
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {self._table}")
+                    result = cur.fetchone()
+                    return int(result[0]) if result else 0
+        except Exception as exc:
+            logger.debug("count() failed for table %r: %s", self._table, exc)
+            return -1
+
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         """Return the *top_k* most relevant knowledge snippets for *query*.
 

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # the vector store in a background thread every time the application starts.
     hc_sync_on_startup: bool = True
 
+    # Docs ingestion
+    # Set to a directory path to auto-ingest all .md files at startup.
+    # Leave empty to disable startup ingestion (run python -m app.ingest_docs manually).
+    # Example: DOCS_DIR=/home/myapp/knowledge
+    docs_dir: str = ""
+
     # Webhook
     webhook_token: str = ""
 

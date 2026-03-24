@@ -151,6 +151,65 @@ def _start_hc_sync_background() -> None:
     )
 
 
+def _start_docs_ingest_background() -> None:
+    """Ingest markdown files from ``DOCS_DIR`` in a background daemon thread.
+
+    Fires once at startup when ``DOCS_DIR`` is set.  Errors are logged as
+    warnings and do not affect the webhook server.
+    """
+    from app.ingest_docs import DocsIngestion
+
+    def _run() -> None:
+        try:
+            ingestor = DocsIngestion(docs_dir=settings.docs_dir, vector_store=_vector_store)
+            count = ingestor.ingest()
+            logger.info(
+                "Startup docs ingestion complete: %d chunk(s) indexed from %r.",
+                count,
+                settings.docs_dir,
+            )
+        except Exception as exc:
+            logger.warning("Startup docs ingestion failed (RAG will use existing data): %s", exc)
+
+    thread = threading.Thread(target=_run, name="docs-ingest", daemon=True)
+    thread.start()
+    logger.info(
+        "Docs ingestion started in background thread (DOCS_DIR=%r).",
+        settings.docs_dir,
+    )
+
+
+def _log_knowledge_store_status() -> None:
+    """Log the number of documents in the knowledge store.
+
+    Emits a prominent WARNING when the store is empty so operators can
+    immediately see that RAG will not return any context.  This is the most
+    common reason the bot answers "I'm not sure" for every question on a
+    fresh deployment.
+    """
+    if _vector_store is None:
+        return
+    doc_count = _vector_store.count()
+    if doc_count < 0:
+        logger.warning(
+            "RAG knowledge store: could not determine document count "
+            "(table may not exist yet — it will be created on first sync)."
+        )
+    elif doc_count == 0:
+        logger.warning(
+            "RAG knowledge store is EMPTY — the bot will answer 'I'm not sure' "
+            "for every question until documents are indexed. "
+            "To populate it, choose one of:\n"
+            "  1. Set CHATWOOT_DSN and run: python -m app.hc_sync\n"
+            "  2. Set DOCS_DIR to a directory of .md files and restart, or run: "
+            "python -m app.ingest_docs [/path/to/docs]"
+        )
+    else:
+        logger.info(
+            "RAG knowledge store: %d document(s) indexed and ready.", doc_count
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global _vector_store, _conversation_memory, _chatwoot_client, _message_buffer
@@ -185,6 +244,12 @@ async def lifespan(application: FastAPI):
 
     if settings.chatwoot_dsn and settings.hc_sync_on_startup:
         _start_hc_sync_background()
+
+    if settings.docs_dir:
+        _start_docs_ingest_background()
+
+    # Log knowledge-store size so operators can confirm RAG is populated.
+    _log_knowledge_store_status()
 
     yield
 
@@ -236,8 +301,15 @@ def _is_incoming_customer_message(payload: dict) -> bool:
 
 @app.get("/health")
 async def health_check() -> dict:
-    """Liveness probe endpoint."""
-    return {"status": "ok"}
+    """Liveness probe and RAG status endpoint.
+
+    Returns the number of documents indexed in the knowledge store so
+    operators can verify RAG is populated without inspecting logs.
+    A ``knowledge_docs`` value of ``0`` means the store is empty and the
+    bot will reply "I'm not sure" to every question.
+    """
+    doc_count = _vector_store.count() if _vector_store else -1
+    return {"status": "ok", "knowledge_docs": doc_count}
 
 
 @app.post("/webhook")

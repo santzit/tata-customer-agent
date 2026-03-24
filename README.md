@@ -103,8 +103,23 @@ Chatwoot HTTP client is replaced by a `MagicMock`.
 | `CHATWOOT_ACCOUNT_ID` | Chatwoot account ID |
 | `CHATWOOT_DSN` | Chatwoot database DSN for Help Center sync (optional) |
 | `HC_SYNC_ON_STARTUP` | Sync HC articles at startup when `CHATWOOT_DSN` is set (default `true`) |
+| `DOCS_DIR` | Directory of `.md` files to ingest into RAG at startup (optional) |
 | `WEBHOOK_TOKEN` | Optional secret for webhook signature validation |
 | `RESPONSE_DELAY_SECONDS` | Debounce window before replying (default `120`) |
+
+## Diagnosing an empty knowledge store
+
+After deploying, the first thing to check if the bot says "I'm not sure" for
+every question is whether the knowledge store has any documents:
+
+```bash
+curl https://your-agent-url/health
+# {"status": "ok", "knowledge_docs": 0}   ← store is empty, RAG not working
+# {"status": "ok", "knowledge_docs": 47}  ← 47 docs indexed, RAG ready
+```
+
+A `knowledge_docs` value of `0` means the `tata_knowledge` table is empty.
+You need to populate it using one of the two methods below.
 
 ## Help Center RAG sync
 
@@ -151,3 +166,31 @@ CHATWOOT_DSN=postgresql://chatwoot:password@localhost:5432/chatwoot_production
 CHATWOOT_ACCOUNT_ID=1   # change to your Chatwoot account ID
 HC_SYNC_ON_STARTUP=true
 ```
+
+## Docs ingestion (markdown files)
+
+If you don't have Chatwoot Help Center set up, or want to load custom
+knowledge files, you can ingest any directory of Markdown files:
+
+```bash
+# One-time load from a directory
+python -m app.ingest_docs /path/to/your-knowledge-files
+
+# Or using the default "docs/" folder in the project root
+python -m app.ingest_docs
+```
+
+Each `.md` file is split on H2 headings (`## Section`) into focused,
+independently-searchable chunks.  Re-running is safe — chunks are upserted by
+stable ID so no duplicates are created.
+
+To auto-ingest a directory every time the application starts, set `DOCS_DIR`:
+
+```dotenv
+# Ingest all .md files from this directory at every startup
+DOCS_DIR=/home/myapp/knowledge
+```
+
+> **Tip — first-time VPS setup**: run `python -m app.ingest_docs` once
+> immediately after deployment to populate the store, then verify with
+> `curl .../health` before sending the first customer message.
