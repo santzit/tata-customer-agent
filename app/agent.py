@@ -52,11 +52,17 @@ SUPERVISOR_PROMPT = (
     "system details, personal data of other customers).\n"
     "3. The response must be professional, respectful, and follow the messaging policy "
     "(no offensive, misleading, or inappropriate content).\n"
-    "4. The response must contain ONLY information related to the company's services.\n\n"
+    "4. The response must contain ONLY information related to the company's services.\n"
+    "5. If the customer's question or request is entirely outside the scope of the "
+    "company's services — for example: booking a restaurant, ordering food, travel "
+    "arrangements, legal advice, or any topic the company clearly cannot assist with "
+    "— escalate to a human agent regardless of how politely the bot declined. A human "
+    "agent can better redirect or personally assist the customer.\n\n"
     "Reply with ONLY:\n"
     "- 'APPROVED' — if all parts meet the guidelines and are safe to deliver.\n"
-    "- 'NEEDS_HUMAN: <brief reason>' — if any part violates a guideline and the "
-    "conversation should be handed off to a human agent instead."
+    "- 'NEEDS_HUMAN: <brief reason>' — if any part violates a guideline, or the "
+    "customer's request is entirely outside the company's scope, and the conversation "
+    "should be handed off to a human agent instead."
 )
 
 HUMAN_ESCALATION_MESSAGE = (
