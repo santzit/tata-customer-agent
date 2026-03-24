@@ -2,6 +2,7 @@
 
 import hmac
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -123,6 +124,33 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
         )
 
 
+def _start_hc_sync_background() -> None:
+    """Run a Chatwoot Help Center sync in a background daemon thread.
+
+    Fires once at startup when ``CHATWOOT_DSN`` is set and
+    ``HC_SYNC_ON_STARTUP`` is ``true``.  Runs as a daemon so it does not
+    block the process from shutting down.  Any errors are logged as warnings
+    and do not affect the webhook server.
+    """
+    from app.hc_sync import HelpCenterSync
+
+    def _run() -> None:
+        try:
+            sync = HelpCenterSync(vector_store=_vector_store)
+            count = sync.sync()
+            logger.info("Startup HC sync complete: %d article(s) indexed.", count)
+        except Exception as exc:
+            logger.warning("Startup HC sync failed (RAG will use existing data): %s", exc)
+
+    thread = threading.Thread(target=_run, name="hc-sync", daemon=True)
+    thread.start()
+    logger.info(
+        "Help Center sync started in background thread "
+        "(CHATWOOT_DSN configured, account_id=%d).",
+        settings.chatwoot_account_id,
+    )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global _vector_store, _conversation_memory, _chatwoot_client, _message_buffer
@@ -154,6 +182,10 @@ async def lifespan(application: FastAPI):
             "Webhook token authentication is DISABLED (WEBHOOK_TOKEN is not set). "
             "All incoming requests will be accepted without token verification."
         )
+
+    if settings.chatwoot_dsn and settings.hc_sync_on_startup:
+        _start_hc_sync_background()
+
     yield
 
 

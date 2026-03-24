@@ -101,5 +101,53 @@ Chatwoot HTTP client is replaced by a `MagicMock`.
 | `CHATWOOT_BASE_URL` | Chatwoot instance URL |
 | `CHATWOOT_API_TOKEN` | Chatwoot agent bot / API token |
 | `CHATWOOT_ACCOUNT_ID` | Chatwoot account ID |
+| `CHATWOOT_DSN` | Chatwoot database DSN for Help Center sync (optional) |
+| `HC_SYNC_ON_STARTUP` | Sync HC articles at startup when `CHATWOOT_DSN` is set (default `true`) |
 | `WEBHOOK_TOKEN` | Optional secret for webhook signature validation |
 | `RESPONSE_DELAY_SECONDS` | Debounce window before replying (default `120`) |
+
+## Help Center RAG sync
+
+When `CHATWOOT_DSN` is set, Tata can read published articles from Chatwoot's
+own Help Center database and index them into the RAG vector store automatically.
+This removes the need to manage a separate knowledge base and keeps the bot's
+answers in sync with your Help Center content.
+
+### How it works
+
+1. Set `CHATWOOT_DSN` to the PostgreSQL DSN of your Chatwoot database.
+2. Tata reads all published articles for `CHATWOOT_ACCOUNT_ID` from the
+   `articles` table of the Chatwoot database.
+3. Each article's title, description, and HTML body are combined, HTML tags
+   are stripped, and the result is embedded and upserted into the
+   `tata_knowledge` vector table.
+
+### Automatic sync at startup
+
+When `CHATWOOT_DSN` is set and `HC_SYNC_ON_STARTUP=true` (the default), the
+sync runs in a background thread every time the application starts.  The
+webhook server starts immediately — the sync runs concurrently and does not
+delay message handling.
+
+### Manual sync (CLI / cron job)
+
+Run the sync on demand or on a schedule:
+
+```bash
+python -m app.hc_sync
+```
+
+This is useful for:
+- An initial load before the first startup.
+- Refreshing content after updating articles in Chatwoot without restarting
+  the service.
+- Cron-based scheduled syncs (e.g. nightly) when `HC_SYNC_ON_STARTUP=false`.
+
+### Example VPS configuration (`.env`)
+
+```dotenv
+# Point at Chatwoot's own Postgres database
+CHATWOOT_DSN=postgresql://chatwoot:password@localhost:5432/chatwoot_production
+CHATWOOT_ACCOUNT_ID=1   # change to your Chatwoot account ID
+HC_SYNC_ON_STARTUP=true
+```

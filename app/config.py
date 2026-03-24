@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     chatwoot_api_token: str = ""
     chatwoot_account_id: int = 1
 
+    # Help Center sync
+    # Set to the DSN of the Chatwoot database to enable syncing published Help
+    # Center articles into the RAG vector store at startup and via the CLI.
+    # This is often the same Postgres host as POSTGRES_DSN but pointing at the
+    # Chatwoot database instead of tata_agent.
+    # Example: postgresql://chatwoot:password@localhost:5432/chatwoot_production
+    chatwoot_dsn: str = ""
+
+    # When True (default) and CHATWOOT_DSN is set, HC articles are synced into
+    # the vector store in a background thread every time the application starts.
+    hc_sync_on_startup: bool = True
+
     # Webhook
     webhook_token: str = ""
 
