@@ -240,7 +240,8 @@ class TestLiveSimulations:
 
         reply_lower = reply.lower()
         assert any(kw in reply_lower for kw in (
-            "hello", "hi", "hey", "welcome", "help", "assist", "good day", "how can"
+            "hello", "hi", "hey", "welcome", "help", "assist", "good day", "how can",
+            "olá", "oi", "como posso", "ajudar", "posso ajudar", "bem-vindo",
         )), f"Greeting reply not friendly: {reply!r}"
         assert not any(kw in reply_lower for kw in (
             "plan", "r$", "150", "250", "400", "trial class", "yoga", "pilates", "crossfit"
@@ -372,7 +373,8 @@ class TestLiveSimulations:
             "your reservation is", "booking confirmed"
         )), f"Agent incorrectly offered to book a restaurant: {reply!r}"
         assert any(kw in reply_lower for kw in (
-            "cannot", "can\'t", "unable", "sorry", "not sure", "don\'t", "outside", "human agent", "contact", "assist"
+            "cannot", "can't", "unable", "sorry", "not sure", "don't", "outside", "human agent", "contact", "assist",
+            "agentes humanos", "humano", "conectá", "aguarde", "não consigo", "não posso",
         )), f"Agent did not politely decline the off-topic request: {reply!r}"
 
         history = memory.get_history(conversation_id=conv_id)
