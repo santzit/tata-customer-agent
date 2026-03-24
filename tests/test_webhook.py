@@ -432,7 +432,7 @@ def test_chatwoot_client_sends_post_request():
     assert mock_route.called
     assert result["id"] == 1
     sent_request = mock_route.calls.last.request
-    assert sent_request.headers["authorization"] == "Bearer token-abc"
+    assert sent_request.headers["api_access_token"] == "token-abc"
 
 
 def test_chatwoot_client_raises_on_error():
@@ -485,6 +485,6 @@ def test_chatwoot_client_handover_posts_to_toggle_status():
     assert mock_route.called
     assert result["status"] == "open"
     sent_request = mock_route.calls.last.request
-    assert sent_request.headers["authorization"] == "Bearer token-abc"
+    assert sent_request.headers["api_access_token"] == "token-abc"
     body = json.loads(sent_request.content)
     assert body == {"status": "open"}

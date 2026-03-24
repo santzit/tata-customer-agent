@@ -13,10 +13,16 @@ from app.conversation_memory import ConversationMemory
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
+_log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    level=_log_level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# basicConfig is a no-op when uvicorn has already installed handlers.
+# Explicitly set the level on the root logger and the app namespace so
+# the configured LOG_LEVEL takes effect regardless of launch method.
+logging.getLogger().setLevel(_log_level)
+logging.getLogger("app").setLevel(_log_level)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -121,6 +127,12 @@ async def lifespan(application: FastAPI):
             store.ensure_collection()
         except Exception as exc:
             logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
+    logger.info(
+        "Chatwoot client configured: base_url=%r, account_id=%d, api_token_set=%s",
+        settings.chatwoot_base_url,
+        settings.chatwoot_account_id,
+        bool(settings.chatwoot_api_token),
+    )
     if settings.webhook_token:
         logger.info(
             "Webhook token authentication is ENABLED. "

@@ -24,7 +24,7 @@ class ChatwootClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.api_token}",
+            "api_access_token": self.api_token,
             "Content-Type": "application/json",
         }
 
