@@ -106,6 +106,11 @@ class HelpCenterSync:
     def _fetch_published_articles(self) -> list[dict]:
         """Query Chatwoot DB for published HC articles for the configured account.
 
+        Chatwoot stores article status as an integer enum (draft=0, published=1,
+        archived=2) via Rails ActiveRecord enums.  The query accepts both the
+        integer value ``1`` *and* the string ``'published'`` so that it works
+        across Chatwoot versions regardless of the column's underlying type.
+
         Returns:
             A list of dicts with keys ``id``, ``title``, ``content``,
             ``description``.
@@ -121,7 +126,7 @@ class HelpCenterSync:
                     SELECT id, title, content, description
                     FROM   articles
                     WHERE  account_id = %s
-                      AND  status     = 'published'
+                      AND  status::text IN ('1', 'published')
                     ORDER  BY updated_at DESC
                     """,
                     (self._account_id,),

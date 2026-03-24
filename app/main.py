@@ -140,7 +140,11 @@ def _start_hc_sync_background() -> None:
             count = sync.sync()
             logger.info("Startup HC sync complete: %d article(s) indexed.", count)
         except Exception as exc:
-            logger.warning("Startup HC sync failed (RAG will use existing data): %s", exc)
+            logger.exception(
+                "Startup HC sync FAILED — RAG knowledge store may be empty. "
+                "Check CHATWOOT_DSN and CHATWOOT_ACCOUNT_ID. Error: %s",
+                exc,
+            )
 
     thread = threading.Thread(target=_run, name="hc-sync", daemon=True)
     thread.start()
