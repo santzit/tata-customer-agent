@@ -121,6 +121,16 @@ async def lifespan(application: FastAPI):
             store.ensure_collection()
         except Exception as exc:
             logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
+    if settings.webhook_token:
+        logger.info(
+            "Webhook token authentication is ENABLED. "
+            "Chatwoot must send the matching token in the X-Chatwoot-Signature header."
+        )
+    else:
+        logger.info(
+            "Webhook token authentication is DISABLED (WEBHOOK_TOKEN is not set). "
+            "All incoming requests will be accepted without token verification."
+        )
     yield
 
 
@@ -138,8 +148,16 @@ def _verify_webhook_token(token: str | None) -> None:
     if not expected:
         return
     if not token:
+        logger.warning(
+            "Webhook request rejected: WEBHOOK_TOKEN is set but the request "
+            "did not include an X-Chatwoot-Signature header."
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     if not hmac.compare_digest(token, expected):
+        logger.warning(
+            "Webhook request rejected: X-Chatwoot-Signature token does not match "
+            "the configured WEBHOOK_TOKEN."
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
