@@ -72,6 +72,39 @@ class ChatwootClient:
             )
             return result
 
+    def toggle_status(self, conversation_id: int, status: str) -> dict:
+        """Change the status of a Chatwoot conversation.
+
+        Args:
+            conversation_id: The Chatwoot conversation ID.
+            status: Target status — ``"open"``, ``"pending"``, or
+                ``"resolved"``.
+
+        Returns:
+            The Chatwoot API response payload as a dict.
+
+        Raises:
+            httpx.HTTPStatusError: On non-2xx HTTP responses.
+        """
+        url = (
+            f"{self.base_url}/api/v1/accounts/{self.account_id}"
+            f"/conversations/{conversation_id}/toggle_status"
+        )
+        logger.debug(
+            "Toggling conversation %d status to %r.", conversation_id, status
+        )
+        with httpx.Client(timeout=30) as client:
+            response = client.post(url, json={"status": status}, headers=self._headers())
+            response.raise_for_status()
+            result = response.json()
+            logger.info(
+                "Chatwoot conversation %d status changed to %r (HTTP %d).",
+                conversation_id,
+                result.get("status"),
+                response.status_code,
+            )
+            return result
+
     def handover_to_human(self, conversation_id: int) -> dict:
         """Hand over a conversation from the bot to a human agent.
 
@@ -89,19 +122,11 @@ class ChatwootClient:
         Raises:
             httpx.HTTPStatusError: On non-2xx HTTP responses.
         """
-        url = (
-            f"{self.base_url}/api/v1/accounts/{self.account_id}"
-            f"/conversations/{conversation_id}/toggle_status"
-        )
         logger.info("Handing over conversation %d to a human agent.", conversation_id)
-        with httpx.Client(timeout=30) as client:
-            response = client.post(url, json={"status": "open"}, headers=self._headers())
-            response.raise_for_status()
-            result = response.json()
-            logger.info(
-                "Chatwoot conversation %d handed over to human (HTTP %d, status=%r)",
-                conversation_id,
-                response.status_code,
-                result.get("status"),
-            )
-            return result
+        result = self.toggle_status(conversation_id, "open")
+        logger.info(
+            "Chatwoot conversation %d handed over to human (status=%r).",
+            conversation_id,
+            result.get("status"),
+        )
+        return result

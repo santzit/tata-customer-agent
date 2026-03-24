@@ -104,6 +104,17 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
                 conversation_id,
             )
             _chatwoot_client.handover_to_human(conversation_id=conversation_id)
+        else:
+            # Move the conversation from "pending" to "open" so that the bot's
+            # replies are visible in the Chatwoot Inbox/Conversations view.
+            # While the bot handled this turn autonomously, keeping the
+            # conversation in "pending" status hides it from the normal inbox,
+            # so agents cannot see the exchange.
+            logger.info(
+                "Setting conversation %d to 'open' so replies are visible in Chatwoot inbox.",
+                conversation_id,
+            )
+            _chatwoot_client.toggle_status(conversation_id=conversation_id, status="open")
     except Exception as exc:
         logger.exception(
             "Failed to send reply to Chatwoot for conversation %d: %s",
