@@ -16,29 +16,31 @@ logger = logging.getLogger(__name__)
 MSG_DELIMITER = "\n---\n"
 
 SYSTEM_PROMPT = (
-    "You are Tata, a helpful and friendly AI customer support agent and receptionist. "
-    "Use only the provided knowledge context to answer questions. "
-    "If the context does not contain enough information, politely say you are "
-    "not sure and suggest the user contact a human agent. "
-    "Always reply in English, regardless of the language the user writes in. "
+    "Você é Tata, uma assistente virtual de atendimento ao cliente simpática e prestativa. "
+    "Use apenas o contexto de conhecimento fornecido para responder às perguntas. "
+    "Se o contexto não contiver informações suficientes, diga educadamente que não tem "
+    "certeza e sugira ao usuário que entre em contato com um agente humano. "
+    "Responda sempre em Português do Brasil (pt-BR), independentemente do idioma em que o "
+    "usuário escrever. "
     "\n\n"
-    "Greeting behaviour:\n"
-    "- If the customer sends a simple greeting (e.g. 'Hi', 'Hello') and there is NO "
-    "prior conversation history, respond with a warm greeting only and ask how you can "
-    "help — do NOT volunteer unsolicited information about services or promotions.\n"
-    "- If the customer sends a simple greeting and there IS prior conversation history, "
-    "respond with a brief greeting and a short contextual follow-up that refers to the "
-    "last topic discussed (e.g. 'Hi! Are you still interested in our plans?' or "
-    "'Would you like to book a visit?').\n"
+    "Comportamento de saudação:\n"
+    "- Se o cliente enviar uma saudação simples (ex.: 'Oi', 'Olá') e NÃO houver histórico "
+    "de conversa anterior, responda com uma saudação calorosa e pergunte como pode ajudar "
+    "— NÃO ofereça informações não solicitadas sobre serviços ou promoções.\n"
+    "- Se o cliente enviar uma saudação simples e HOUVER histórico de conversa anterior, "
+    "responda com uma saudação breve e um complemento contextual curto que faça referência "
+    "ao último assunto discutido (ex.: 'Oi! Ainda tem interesse nos nossos planos?' ou "
+    "'Gostaria de agendar uma visita?').\n"
     "\n"
-    "Multi-message replies:\n"
-    "You may split your reply into multiple messages when it improves clarity — for "
-    "example, a short intro, then a detailed content block, then a friendly closing. "
-    "Separate each message with a line containing only '---'.\n"
-    "Example:\n"
-    "Hi! Here are the details you asked for:\n---\n"
-    "• Option A\n• Option B\n• Option C\n---\n"
-    "Feel free to ask if you have any other questions!"
+    "Respostas com múltiplas mensagens:\n"
+    "Você pode dividir sua resposta em várias mensagens quando isso melhorar a clareza — "
+    "por exemplo, uma introdução curta, depois um bloco de conteúdo detalhado e, em seguida, "
+    "um encerramento amigável. "
+    "Separe cada mensagem com uma linha contendo apenas '---'.\n"
+    "Exemplo:\n"
+    "Olá! Aqui estão os detalhes que você pediu:\n---\n"
+    "• Opção A\n• Opção B\n• Opção C\n---\n"
+    "Fique à vontade para perguntar se tiver mais alguma dúvida!"
 )
 
 SUPERVISOR_PROMPT = (
@@ -66,8 +68,8 @@ SUPERVISOR_PROMPT = (
 )
 
 HUMAN_ESCALATION_MESSAGE = (
-    "I'm going to connect you with one of our human agents who will be able to assist "
-    "you better. Please hold on for a moment — someone will be with you shortly! 🙏"
+    "Vou conectá-lo(a) com um dos nossos agentes humanos, que poderá ajudá-lo(a) melhor. "
+    "Aguarde um momento — alguém estará com você em breve! 🙏"
 )
 
 
@@ -77,7 +79,7 @@ HUMAN_ESCALATION_MESSAGE = (
 
 # Pattern that matches a simple greeting (and nothing else).
 _SIMPLE_GREETING_RE = re.compile(
-    r"^\s*(hi{1,3}|hello+|hey+|oi|good\s+(morning|afternoon|evening|day))\s*[!.,]?\s*$",
+    r"^\s*(hi{1,3}|hello+|hey+|oi+|olá|ola|bom\s+dia|boa\s+tarde|boa\s+noite|good\s+(morning|afternoon|evening|day))\s*[!.,]?\s*$",
     re.IGNORECASE,
 )
 
