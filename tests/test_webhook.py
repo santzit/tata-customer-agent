@@ -119,10 +119,13 @@ def test_client(
 
 
 def test_health_check(test_client):
-    """GET /health should return 200 with status ok."""
+    """GET /health should return 200 with status ok and a knowledge_docs count."""
     response = test_client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "knowledge_docs" in body
+    assert isinstance(body["knowledge_docs"], int)
 
 
 # ---------------------------------------------------------------------------
