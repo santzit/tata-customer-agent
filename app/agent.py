@@ -114,6 +114,22 @@ def _format_for_supervisor(messages: list[str]) -> str:
     return f"{len(messages)} messages to be sent in sequence:\n\n{parts}"
 
 
+def _format_history_for_supervisor(history: list[dict[str, str]]) -> str:
+    """Format conversation history for inclusion in the supervisor review prompt.
+
+    Returns an empty string when there is no prior history so the prompt
+    stays compact for first-turn conversations.
+    """
+    if not history:
+        return ""
+    lines = []
+    for turn in history:
+        role = turn.get("role", "unknown").capitalize()
+        content = turn.get("content", "")
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -224,6 +240,10 @@ def review_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
     - Absence of sensitive information.
     - Professional tone and policy compliance.
     - No off-topic content.
+    - Out-of-scope requests escalated to a human agent.
+
+    Conversation history is included so the supervisor can evaluate the response
+    in the context of the full conversation, not just the current message.
 
     All parts are reviewed together in one call so the supervisor can assess
     the full conversation turn as a whole.
@@ -232,15 +252,24 @@ def review_node(state: AgentState, *, openai_client: OpenAI) -> AgentState:
     human agent; ``False`` when the full response is safe to deliver.
     """
     formatted = _format_for_supervisor(state["messages"])
+    history = state.get("history", [])
+    history_text = _format_history_for_supervisor(history)
+
+    if history_text:
+        user_content = (
+            f"Conversation history (most recent first):\n{history_text}\n\n"
+            f"Latest customer message: {state['user_message']}\n\n"
+            f"Tata's response:\n{formatted}"
+        )
+    else:
+        user_content = (
+            f"Customer question: {state['user_message']}\n\n"
+            f"Tata's response:\n{formatted}"
+        )
+
     review_messages: list[dict] = [
         {"role": "system", "content": SUPERVISOR_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Customer question: {state['user_message']}\n\n"
-                f"Tata's response:\n{formatted}"
-            ),
-        },
+        {"role": "user", "content": user_content},
     ]
     completion = openai_client.chat.completions.create(
         model=settings.llm_model,
