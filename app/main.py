@@ -6,6 +6,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent import run_agent
 from app.services.chatwoot_client import ChatwootClient
@@ -21,6 +22,8 @@ from app.db_models import (
     reset_message_to_pending,
 )
 from app.hc_sync import HelpCenterSync
+from app.web_models import create_web_tables
+from app.routers.web import router as web_router, _engine as web_engine
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
@@ -292,6 +295,14 @@ async def lifespan(application: FastAPI):
         logger.warning("Entity schema setup failed (continuing anyway): %s", exc)
 
     # ------------------------------------------------------------------
+    # 2b. Ensure web frontend tables exist.
+    # ------------------------------------------------------------------
+    try:
+        create_web_tables(web_engine)
+    except Exception as exc:
+        logger.warning("Web table setup failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
     # 3. Initialise RAG vector store and conversation memory.
     # ------------------------------------------------------------------
     _vector_store = PgVectorStore()
@@ -349,6 +360,15 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="Tata Customer Agent", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(web_router)
 
 
 # ---------------------------------------------------------------------------

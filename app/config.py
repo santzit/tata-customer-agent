@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     chatwoot_base_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""
     chatwoot_account_id: int = 1
+    chatwoot_master_token: str = ""  # super-admin token for Chatwoot API
 
     # Webhook
     webhook_token: str = ""
