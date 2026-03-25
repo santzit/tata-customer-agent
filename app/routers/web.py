@@ -19,6 +19,7 @@ from app.pg_vector_store import PgVectorStore
 from app.services.chatwoot_client import ChatwootClient
 from app.web_models import (
     ChatwootAccount,
+    ChatwootInbox,
     HelpCenterArticle,
     OpenAIConfig,
     create_web_tables,
@@ -281,6 +282,7 @@ def sync_help_center(body: SyncHelpCenterBody):
                         existing.title = title
                         existing.content = content
                         existing.locale = locale
+                        existing.portal_slug = portal_slug
                         session.add(existing)
                     else:
                         session.add(
@@ -289,6 +291,7 @@ def sync_help_center(body: SyncHelpCenterBody):
                                 title=title,
                                 content=content,
                                 locale=locale,
+                                portal_slug=portal_slug,
                             )
                         )
                     synced += 1
@@ -308,8 +311,149 @@ def sync_help_center(body: SyncHelpCenterBody):
 
 
 # ---------------------------------------------------------------------------
+# Per-account inbox endpoints (DB-backed with Chatwoot sync)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts/{account_id}/inboxes")
+def get_account_inboxes(account_id: int):
+    """Return inboxes for a specific Chatwoot account from the local DB."""
+    try:
+        with Session(_engine) as session:
+            inboxes = session.exec(
+                select(ChatwootInbox).where(ChatwootInbox.account_id == account_id)
+            ).all()
+        return [
+            {
+                "id": i.inbox_id,
+                "name": i.name,
+                "account_id": i.account_id,
+                "portal_slug": i.portal_slug,
+            }
+            for i in inboxes
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/inboxes/sync")
+def sync_account_inboxes(account_id: int):
+    """Fetch inboxes from Chatwoot for an account and upsert into local DB.
+
+    Also discovers portal associations so that ``portal_slug`` is populated
+    for each inbox (enabling per-inbox Help Center filtering).
+    """
+    if not settings.chatwoot_master_token:
+        raise HTTPException(
+            status_code=502,
+            detail="CHATWOOT_MASTER_TOKEN is not set — cannot sync inboxes.",
+        )
+    client = _web_client()
+
+    # Build a mapping of inbox_id → portal_slug from portals
+    portal_by_inbox: dict[int, str] = {}
+    try:
+        portals = client.help_center.list_portals(account_id=account_id)
+        for portal in portals:
+            slug = portal.get("slug", "")
+            for pb_inbox in portal.get("inboxes", []):
+                iid = pb_inbox.get("id") if isinstance(pb_inbox, dict) else pb_inbox
+                if iid and slug:
+                    portal_by_inbox[int(iid)] = slug
+    except Exception as exc:
+        logger.warning("Could not fetch portals for account %d: %s", account_id, exc)
+
+    inboxes = client.inboxes.list(account_id=account_id)
+    synced = 0
+    try:
+        with Session(_engine) as session:
+            for inbox in inboxes:
+                inbox_id = inbox.get("id")
+                name = inbox.get("name", str(inbox_id))
+                if not inbox_id:
+                    continue
+                portal_slug = portal_by_inbox.get(int(inbox_id), "")
+                existing = session.exec(
+                    select(ChatwootInbox).where(
+                        ChatwootInbox.inbox_id == inbox_id,
+                        ChatwootInbox.account_id == account_id,
+                    )
+                ).first()
+                if existing:
+                    existing.name = name
+                    existing.portal_slug = portal_slug
+                else:
+                    session.add(
+                        ChatwootInbox(
+                            inbox_id=inbox_id,
+                            account_id=account_id,
+                            name=name,
+                            portal_slug=portal_slug,
+                        )
+                    )
+                synced += 1
+            session.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"synced": synced, "inboxes": [{"id": i.get("id"), "name": i.get("name")} for i in inboxes]}
+
+
+@router.get("/accounts/{account_id}/inboxes/{inbox_id}/help-center")
+def get_inbox_help_center(
+    account_id: int,
+    inbox_id: int,
+    search: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+):
+    """Return Help Center articles for the portal linked to a specific inbox.
+
+    Looks up the inbox's ``portal_slug`` in the local DB, then filters
+    ``web_help_center_articles`` to only return articles from that portal.
+    Returns an empty list (not 404) when no portal is linked yet.
+    """
+    try:
+        with Session(_engine) as session:
+            inbox = session.exec(
+                select(ChatwootInbox).where(
+                    ChatwootInbox.inbox_id == inbox_id,
+                    ChatwootInbox.account_id == account_id,
+                )
+            ).first()
+            portal_slug = inbox.portal_slug if inbox else ""
+
+            articles = session.exec(select(HelpCenterArticle)).all()
+
+        # Filter by portal_slug if the inbox has one
+        if portal_slug:
+            articles = [a for a in articles if a.portal_slug == portal_slug]
+
+        if search:
+            q = search.lower()
+            articles = [
+                a for a in articles if q in a.title.lower() or q in a.content.lower()
+            ]
+        if locale:
+            articles = [a for a in articles if a.locale == locale]
+
+        return [
+            {
+                "id": a.article_id,
+                "title": a.title,
+                "content": a.content,
+                "locale": a.locale,
+                "portal_slug": a.portal_slug,
+                "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+            }
+            for a in articles
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Config endpoints
 # ---------------------------------------------------------------------------
+
 
 
 @router.get("/config/token-api")

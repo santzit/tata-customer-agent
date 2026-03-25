@@ -22,8 +22,9 @@ class ChatwootInbox(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     inbox_id: int
-    account_id: int = Field(foreign_key="web_chatwoot_accounts.id")
+    account_id: int  # Chatwoot account_id (not a FK; avoids constraint issues)
     name: str = ""
+    portal_slug: str = ""  # Associated Help Center portal slug (if any)
 
 
 class ChatwootTeam(SQLModel, table=True):
@@ -44,6 +45,7 @@ class HelpCenterArticle(SQLModel, table=True):
     content: str = ""
     locale: str = "en"
     updated_at: Optional[datetime] = None
+    portal_slug: str = ""  # Portal the article belongs to
 
 
 class OpenAIConfig(SQLModel, table=True):

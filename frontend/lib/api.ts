@@ -27,6 +27,13 @@ export interface Account {
   [key: string]: unknown;
 }
 
+export interface DbInbox {
+  id: number;
+  name: string;
+  account_id: number;
+  portal_slug?: string;
+}
+
 export interface Inbox {
   id: number;
   name: string;
@@ -148,6 +155,30 @@ export function saveOpenAIConfig(config: OpenAIConfig): Promise<{ ok: boolean }>
     method: "POST",
     body: JSON.stringify(config),
   });
+}
+
+export function getAccountInboxes(accountId: number): Promise<DbInbox[]> {
+  return request<DbInbox[]>(`/web/accounts/${accountId}/inboxes`);
+}
+
+export function syncAccountInboxes(accountId: number): Promise<{ synced: number; inboxes: DbInbox[] }> {
+  return request<{ synced: number; inboxes: DbInbox[] }>(`/web/accounts/${accountId}/inboxes/sync`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function getInboxHelpCenter(
+  accountId: number,
+  inboxId: number,
+  search?: string,
+  locale?: string
+): Promise<Article[]> {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (locale) params.set("locale", locale);
+  const q = params.toString() ? `?${params}` : "";
+  return request<Article[]>(`/web/accounts/${accountId}/inboxes/${inboxId}/help-center${q}`);
 }
 
 export function getConversations(

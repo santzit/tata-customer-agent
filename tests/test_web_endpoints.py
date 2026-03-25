@@ -563,3 +563,164 @@ class TestConversationMessages:
 
         assert resp.status_code == 200
         assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# /web/accounts/{id}/inboxes  and  /web/accounts/{id}/inboxes/sync
+# ---------------------------------------------------------------------------
+
+
+class TestAccountInboxes:
+    """Tests for per-account inbox DB endpoints."""
+
+    def test_get_inboxes_returns_list(self):
+        """GET /web/accounts/1/inboxes returns inboxes stored for that account."""
+        from app.web_models import ChatwootInbox
+
+        inbox = ChatwootInbox(id=1, inbox_id=10, account_id=1, name="Website Chat", portal_slug="my-portal")
+        mock_session = _mock_db_session(all_return=[inbox])
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/accounts/1/inboxes")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == 10
+        assert data[0]["name"] == "Website Chat"
+        assert data[0]["portal_slug"] == "my-portal"
+
+    def test_get_inboxes_returns_empty_when_none(self):
+        """GET /web/accounts/99/inboxes returns [] when no inboxes found."""
+        mock_session = _mock_db_session(all_return=[])
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/accounts/99/inboxes")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_sync_inboxes_calls_chatwoot_client(self):
+        """POST /web/accounts/1/inboxes/sync calls client.inboxes.list and upserts."""
+        mock_client = _mock_web_client(
+            inboxes_list=[{"id": 10, "name": "Website Chat"}],
+        )
+        mock_client.help_center.list_portals.return_value = [
+            {"slug": "my-portal", "name": "Tata HC", "inboxes": [{"id": 10}]}
+        ]
+        mock_session = _mock_db_session(first_return=None)
+
+        with patch("app.routers.web._web_client", return_value=mock_client), \
+             patch("app.routers.web.Session", return_value=mock_session), \
+             patch("app.config.settings.chatwoot_master_token", "test-token"):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/web/accounts/1/inboxes/sync")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["synced"] == 1
+        assert data["inboxes"][0]["name"] == "Website Chat"
+        mock_client.inboxes.list.assert_called_once_with(account_id=1)
+        mock_client.help_center.list_portals.assert_called_once_with(account_id=1)
+
+    def test_sync_inboxes_no_master_token(self):
+        """POST /web/accounts/1/inboxes/sync returns 502 when CHATWOOT_MASTER_TOKEN unset."""
+        with patch("app.config.settings.chatwoot_master_token", ""):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/web/accounts/1/inboxes/sync")
+        assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# /web/accounts/{id}/inboxes/{inbox_id}/help-center
+# ---------------------------------------------------------------------------
+
+
+class TestInboxHelpCenter:
+    """Tests for inbox-specific Help Center article endpoint."""
+
+    def test_returns_articles_filtered_by_portal(self):
+        """GET /web/accounts/1/inboxes/10/help-center returns only articles for inbox's portal."""
+        from app.web_models import ChatwootInbox, HelpCenterArticle
+
+        inbox = ChatwootInbox(id=1, inbox_id=10, account_id=1, name="Chat", portal_slug="my-portal")
+        articles = [
+            HelpCenterArticle(id=1, article_id=1, title="FAQ", content="Answer", locale="en", portal_slug="my-portal"),
+            HelpCenterArticle(id=2, article_id=2, title="Other", content="Other", locale="en", portal_slug="other-portal"),
+        ]
+
+        # Session mock: first() for inbox, all() for articles
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        # The endpoint calls exec twice: once for inbox (first()), once for articles (all())
+        mock_session.exec.return_value.first.return_value = inbox
+        mock_session.exec.return_value.all.return_value = articles
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/accounts/1/inboxes/10/help-center")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Only articles from my-portal should be returned
+        assert all(a["portal_slug"] == "my-portal" for a in data)
+        assert any(a["title"] == "FAQ" for a in data)
+
+    def test_returns_all_articles_when_no_portal(self):
+        """GET /web/accounts/1/inboxes/10/help-center returns all articles when inbox has no portal."""
+        from app.web_models import ChatwootInbox, HelpCenterArticle
+
+        inbox = ChatwootInbox(id=1, inbox_id=10, account_id=1, name="Chat", portal_slug="")
+        articles = [
+            HelpCenterArticle(id=1, article_id=1, title="Art1", content="c1", locale="en", portal_slug="p1"),
+            HelpCenterArticle(id=2, article_id=2, title="Art2", content="c2", locale="en", portal_slug="p2"),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.first.return_value = inbox
+        mock_session.exec.return_value.all.return_value = articles
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/accounts/1/inboxes/10/help-center")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+
+    def test_search_filter_applied(self):
+        """GET .../help-center?search=FAQ filters articles by search term."""
+        from app.web_models import ChatwootInbox, HelpCenterArticle
+
+        inbox = ChatwootInbox(id=1, inbox_id=10, account_id=1, name="Chat", portal_slug="")
+        articles = [
+            HelpCenterArticle(id=1, article_id=1, title="FAQ about gym", content="...", locale="en", portal_slug=""),
+            HelpCenterArticle(id=2, article_id=2, title="Pricing", content="...", locale="en", portal_slug=""),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.first.return_value = inbox
+        mock_session.exec.return_value.all.return_value = articles
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/accounts/1/inboxes/10/help-center?search=faq")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert "FAQ" in data[0]["title"]
