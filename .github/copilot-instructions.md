@@ -1,7 +1,7 @@
 # Copilot instructions for tata-customer-agent
 
 ## Constraints 
-- Do not change the tests (/tests/*), unless specifically instructed to do so.
+- Do not change the tests (/tests/*) or services (/app/services/*) unless sttrict instructed to do so.
 - Always run local tests (using pgvector/openai) before committing a new code, to ensure nothing is break
 
 ## Local development prerequisites
