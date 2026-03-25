@@ -56,17 +56,23 @@ export default function SetupPage() {
     <div className="max-w-2xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900">Setup</h1>
-        <p className="text-gray-500 mt-1">Configure your Chatwoot account and API credentials.</p>
+        <p className="text-gray-500 mt-1">
+          Select an account and inbox from your Chatwoot instance, then set the bot Token API.
+        </p>
       </div>
 
-      {/* Step 1 */}
+      {/* Step 1 — Account & Inbox (loaded from Chatwoot) */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
-        <div className="flex items-center gap-3 mb-5">
+        <div className="flex items-center gap-3 mb-2">
           <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold">
             1
           </span>
-          <h2 className="text-lg font-semibold text-gray-800">Chatwoot Account &amp; Token</h2>
+          <h2 className="text-lg font-semibold text-gray-800">Chatwoot Account &amp; Inbox</h2>
         </div>
+        <p className="text-xs text-gray-400 mb-5 ml-11">
+          Accounts and inboxes are read directly from your Chatwoot instance via{' '}
+          <code className="bg-gray-100 px-1 rounded">CHATWOOT_MASTER_TOKEN</code>.
+        </p>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
@@ -78,7 +84,7 @@ export default function SetupPage() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Account</label>
             {loadingAccounts ? (
-              <div className="text-sm text-gray-400">Loading accounts…</div>
+              <div className="text-sm text-gray-400">Loading accounts from Chatwoot…</div>
             ) : (
               <select
                 value={selectedAccount}
@@ -122,20 +128,37 @@ export default function SetupPage() {
               </select>
             )}
           </div>
+        </div>
+      </div>
 
+      {/* Step 2 — Bot Token API */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold">
+            2
+          </span>
+          <h2 className="text-lg font-semibold text-gray-800">Bot Token API</h2>
+        </div>
+        <p className="text-xs text-gray-400 mb-5 ml-11">
+          The Token API is used by the Tata bot to authenticate its API responses.
+          It is stored per Chatwoot account in the local database.
+        </p>
+
+        <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Chatwoot API Token
+              Token API
             </label>
             <input
               type="text"
               value={tokenApi}
               onChange={(e) => setTokenApi(e.target.value)}
-              placeholder="Paste your Chatwoot API token here"
+              placeholder="Enter the bot Token API value"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <p className="text-xs text-gray-400 mt-1">
-              Found in Chatwoot → Settings → API Access Token.
+              This is the <strong>bot's</strong> response token — not your Chatwoot user API key.
+              Stored in the local DB and linked to the selected account above.
             </p>
           </div>
 
@@ -156,16 +179,16 @@ export default function SetupPage() {
             disabled={saving}
             className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2.5 rounded-lg text-sm transition-colors"
           >
-            {saving ? 'Saving…' : 'Save Chatwoot Config'}
+            {saving ? 'Saving…' : 'Save Configuration'}
           </button>
         </div>
       </div>
 
-      {/* Step 2 */}
+      {/* Step 3 — OpenAI */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
         <div className="flex items-center gap-3 mb-3">
           <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold">
-            2
+            3
           </span>
           <h2 className="text-lg font-semibold text-gray-800">OpenAI Configuration</h2>
         </div>
