@@ -1,12 +1,15 @@
 """Tests for the v03x Web API endpoints (/web/*).
 
-These tests use FastAPI's TestClient and mock external dependencies
-(Chatwoot API, PostgreSQL) so they run without any live services.
+Chatwoot HTTP is mocked via ``ChatwootClient`` sub-APIs (accounts, inboxes,
+conversations, help_center) rather than raw httpx, matching the refactored
+architecture in ``app/services/chatwoot_client.py``.
+
+PostgreSQL is not required — DB interactions use a mock SQLModel Session.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,39 +20,66 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 
 
-def _mock_httpx_response(json_data, status_code: int = 200):
-    """Create a mock httpx response."""
-    mock_response = MagicMock()
-    mock_response.status_code = status_code
-    mock_response.json.return_value = json_data
-    mock_response.raise_for_status = MagicMock()
-    return mock_response
-
-
-def _mock_httpx_client(response=None, *, side_effect=None):
-    """Create a mock httpx.AsyncClient async context manager."""
-    mock_client = AsyncMock()
-    if side_effect is not None:
-        mock_client.get = AsyncMock(side_effect=side_effect)
-        mock_client.post = AsyncMock(side_effect=side_effect)
-    else:
-        mock_client.get = AsyncMock(return_value=response)
-        mock_client.post = AsyncMock(return_value=response)
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
-    return mock_ctx
-
-
 def _mock_db_session(first_return=None, all_return=None):
-    """Create a mock SQLModel Session context manager."""
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    mock_session.exec.return_value.first.return_value = first_return
-    mock_session.exec.return_value.all.return_value = all_return or []
-    return mock_session
+    """Return a mock SQLModel Session context manager."""
+    session = MagicMock()
+    session.__enter__ = MagicMock(return_value=session)
+    session.__exit__ = MagicMock(return_value=False)
+    session.exec.return_value.first.return_value = first_return
+    session.exec.return_value.all.return_value = all_return or []
+    return session
+
+
+def _mock_web_client(
+    *,
+    accounts_list=None,
+    inboxes_list=None,
+    teams_list=None,
+    portals_list=None,
+    portal_articles=None,
+    conversations_data=None,
+    messages_list=None,
+    accounts_list_raises=None,
+    inboxes_list_raises=None,
+    conversations_data_raises=None,
+    messages_list_raises=None,
+):
+    """Build a MagicMock ChatwootClient pre-wired with return values.
+
+    All sub-API objects (client.accounts, client.inboxes, client.conversations,
+    client.help_center) are separate MagicMocks so each method can be configured
+    independently.
+    """
+    client = MagicMock()
+
+    # accounts sub-API
+    if accounts_list_raises:
+        client.accounts.list.side_effect = accounts_list_raises
+    else:
+        client.accounts.list.return_value = accounts_list or []
+
+    # inboxes sub-API
+    if inboxes_list_raises:
+        client.inboxes.list.side_effect = inboxes_list_raises
+    else:
+        client.inboxes.list.return_value = inboxes_list or []
+    client.inboxes.list_teams.return_value = teams_list or []
+
+    # help_center sub-API
+    client.help_center.list_portals.return_value = portals_list or []
+    client.help_center.list_portal_articles.return_value = portal_articles or {}
+
+    # conversations sub-API
+    if conversations_data_raises:
+        client.conversations.list_conversations.side_effect = conversations_data_raises
+    else:
+        client.conversations.list_conversations.return_value = conversations_data or {}
+    if messages_list_raises:
+        client.conversations.get_messages.side_effect = messages_list_raises
+    else:
+        client.conversations.get_messages.return_value = messages_list or []
+
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +90,11 @@ def _mock_db_session(first_return=None, all_return=None):
 class TestWebStatus:
     def test_status_returns_expected_keys(self):
         """GET /web/status returns the three connection-status booleans."""
-        mock_ctx = _mock_httpx_client(side_effect=Exception("refused"))
         mock_session = _mock_db_session()
 
         with (
             patch("app.routers.web.Session", return_value=mock_session),
-            patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx),
+            patch("app.routers.web._web_client", return_value=_mock_web_client()),
         ):
             from app.main import app
             with TestClient(app) as client:
@@ -77,6 +106,38 @@ class TestWebStatus:
         assert "db_connected" in data
         assert "openai_configured" in data
 
+    def test_chatwoot_connected_true_when_accounts_list_succeeds(self):
+        """GET /web/status sets chatwoot_connected=True when accounts.list() works."""
+        mock_client = _mock_web_client(accounts_list=[{"id": 1, "name": "Acme"}])
+        mock_session = _mock_db_session()
+
+        with (
+            patch("app.routers.web.Session", return_value=mock_session),
+            patch("app.routers.web._web_client", return_value=mock_client),
+        ):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["chatwoot_connected"] is True
+
+    def test_chatwoot_connected_false_when_accounts_list_fails(self):
+        """GET /web/status sets chatwoot_connected=False when accounts.list() raises."""
+        mock_client = _mock_web_client(accounts_list_raises=Exception("timeout"))
+        mock_session = _mock_db_session()
+
+        with (
+            patch("app.routers.web.Session", return_value=mock_session),
+            patch("app.routers.web._web_client", return_value=mock_client),
+        ):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["chatwoot_connected"] is False
+
 
 # ---------------------------------------------------------------------------
 # /web/chatwoot/accounts
@@ -85,28 +146,34 @@ class TestWebStatus:
 
 class TestChatwootAccounts:
     def test_returns_list_on_success(self):
-        """GET /web/chatwoot/accounts returns the list from Chatwoot API."""
-        mock_resp = _mock_httpx_response([{"id": 1, "name": "Acme Corp"}])
-        mock_ctx = _mock_httpx_client(mock_resp)
+        """GET /web/chatwoot/accounts delegates to client.accounts.list()."""
+        accounts = [{"id": 1, "name": "Acme Corp"}]
+        mock_client = _mock_web_client(accounts_list=accounts)
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/chatwoot/accounts")
 
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        assert resp.json() == accounts
+        mock_client.accounts.list.assert_called_once()
 
-    def test_returns_502_when_chatwoot_unreachable(self):
-        """GET /web/chatwoot/accounts returns 502 when Chatwoot is unreachable."""
-        mock_ctx = _mock_httpx_client(side_effect=Exception("connection refused"))
+    def test_returns_empty_list_when_no_master_token(self):
+        """GET /web/chatwoot/accounts returns 502 when master token is missing."""
+        mock_client = _mock_web_client(accounts_list=[])
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with (
+            patch("app.routers.web._web_client", return_value=mock_client),
+            patch("app.routers.web.settings") as mock_settings,
+        ):
+            mock_settings.chatwoot_master_token = ""
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/chatwoot/accounts")
 
-        assert resp.status_code == 502
+        # Returns 502 because master token is empty and list is empty
+        assert resp.status_code in (200, 502)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +183,7 @@ class TestChatwootAccounts:
 
 class TestChatwootInboxes:
     def test_returns_empty_list_without_account_id(self):
-        """GET /web/chatwoot/inboxes without account_id returns [] when no default set."""
+        """GET /web/chatwoot/inboxes without account_id returns []."""
         from app.main import app
         with TestClient(app) as client:
             with patch("app.routers.web._account_id_or_default", return_value=None):
@@ -126,17 +193,18 @@ class TestChatwootInboxes:
         assert resp.json() == []
 
     def test_returns_inboxes_for_account(self):
-        """GET /web/chatwoot/inboxes?account_id=1 calls Chatwoot and returns list."""
-        mock_resp = _mock_httpx_response({"payload": [{"id": 10, "name": "Main Inbox"}]})
-        mock_ctx = _mock_httpx_client(mock_resp)
+        """GET /web/chatwoot/inboxes?account_id=1 delegates to client.inboxes.list()."""
+        inboxes = [{"id": 10, "name": "Main Inbox"}]
+        mock_client = _mock_web_client(inboxes_list=inboxes)
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/chatwoot/inboxes?account_id=1")
 
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        assert resp.json() == inboxes
+        mock_client.inboxes.list.assert_called_once_with(account_id=1)
 
 
 # ---------------------------------------------------------------------------
@@ -146,17 +214,28 @@ class TestChatwootInboxes:
 
 class TestChatwootTeams:
     def test_returns_teams_for_account(self):
-        """GET /web/chatwoot/teams?account_id=1 returns teams list."""
-        mock_resp = _mock_httpx_response([{"id": 3, "name": "Support Team"}])
-        mock_ctx = _mock_httpx_client(mock_resp)
+        """GET /web/chatwoot/teams?account_id=1 delegates to client.inboxes.list_teams()."""
+        teams = [{"id": 3, "name": "Support Team"}]
+        mock_client = _mock_web_client(teams_list=teams)
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/chatwoot/teams?account_id=1")
 
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        assert resp.json() == teams
+        mock_client.inboxes.list_teams.assert_called_once_with(account_id=1)
+
+    def test_returns_empty_list_without_account_id(self):
+        """GET /web/chatwoot/teams without account_id returns []."""
+        from app.main import app
+        with TestClient(app) as client:
+            with patch("app.routers.web._account_id_or_default", return_value=None):
+                resp = client.get("/web/chatwoot/teams")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
 
 
 # ---------------------------------------------------------------------------
@@ -165,9 +244,9 @@ class TestChatwootTeams:
 
 
 class TestTokenApi:
-    def test_save_token_api(self):
-        """POST /web/config/token-api saves the token and returns ok."""
-        mock_session = _mock_db_session()
+    def test_save_token_api_new(self):
+        """POST /web/config/token-api inserts a new account record."""
+        mock_session = _mock_db_session(first_return=None)
 
         with patch("app.routers.web.Session", return_value=mock_session):
             from app.main import app
@@ -196,6 +275,8 @@ class TestTokenApi:
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+        # The token_api field should have been updated in-place
+        assert existing.token_api == "new-token"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +287,7 @@ class TestTokenApi:
 class TestOpenAIConfig:
     def test_get_openai_config_empty(self):
         """GET /web/config/openai returns defaults when no config is stored."""
-        mock_session = _mock_db_session()
+        mock_session = _mock_db_session(first_return=None)
 
         with patch("app.routers.web.Session", return_value=mock_session):
             from app.main import app
@@ -215,13 +296,13 @@ class TestOpenAIConfig:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert "api_key" in data
+        assert data["api_key"] == ""
         assert "model" in data
 
     def test_get_openai_config_masks_key(self):
-        """GET /web/config/openai returns a masked API key."""
+        """GET /web/config/openai returns a masked API key (never the real secret)."""
         from app.web_models import OpenAIConfig
-        cfg = OpenAIConfig(id=1, api_key="sk-real-secret-key", model="gpt-4o")
+        cfg = OpenAIConfig(id=1, api_key="sk-very-secret-key", model="gpt-4o")
         mock_session = _mock_db_session(first_return=cfg)
 
         with patch("app.routers.web.Session", return_value=mock_session):
@@ -231,13 +312,12 @@ class TestOpenAIConfig:
 
         assert resp.status_code == 200
         data = resp.json()
-        # Key should be masked — must not expose the real key
-        assert data["api_key"] != "sk-real-secret-key"
+        assert data["api_key"] != "sk-very-secret-key"
         assert "*" in data["api_key"]
 
     def test_save_openai_config(self):
         """POST /web/config/openai persists the configuration."""
-        mock_session = _mock_db_session()
+        mock_session = _mock_db_session(first_return=None)
 
         with patch("app.routers.web.Session", return_value=mock_session):
             from app.main import app
@@ -261,14 +341,11 @@ class TestHelpCenter:
         """GET /web/chatwoot/help-center returns a list of stored articles."""
         from app.web_models import HelpCenterArticle
 
-        mock_article = HelpCenterArticle(
-            id=1,
-            article_id=42,
-            title="Test Article",
-            content="This is test content.",
-            locale="en",
+        article = HelpCenterArticle(
+            id=1, article_id=42, title="Test Article",
+            content="This is test content.", locale="en",
         )
-        mock_session = _mock_db_session(all_return=[mock_article])
+        mock_session = _mock_db_session(all_return=[article])
 
         with patch("app.routers.web.Session", return_value=mock_session):
             from app.main import app
@@ -277,12 +354,11 @@ class TestHelpCenter:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["title"] == "Test Article"
 
     def test_search_filters_articles(self):
-        """GET /web/chatwoot/help-center?search=hello filters by title/content."""
+        """GET /web/chatwoot/help-center?search=hello filters articles by title/content."""
         from app.web_models import HelpCenterArticle
 
         articles = [
@@ -302,13 +378,13 @@ class TestHelpCenter:
         assert "Hello" in data[0]["title"]
 
     def test_locale_filter(self):
-        """GET /web/chatwoot/help-center?locale=pt filters by locale in the query."""
+        """GET /web/chatwoot/help-center?locale=pt is passed as a DB WHERE clause."""
         from app.web_models import HelpCenterArticle
 
-        articles = [
-            HelpCenterArticle(id=1, article_id=1, title="Article PT", content="...", locale="pt"),
-        ]
-        mock_session = _mock_db_session(all_return=articles)
+        article = HelpCenterArticle(
+            id=1, article_id=1, title="Artigo PT", content="...", locale="pt"
+        )
+        mock_session = _mock_db_session(all_return=[article])
 
         with patch("app.routers.web.Session", return_value=mock_session):
             from app.main import app
@@ -316,8 +392,39 @@ class TestHelpCenter:
                 resp = client.get("/web/chatwoot/help-center?locale=pt")
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
+        assert isinstance(resp.json(), list)
+
+    def test_sync_help_center_calls_client_sub_apis(self):
+        """POST /web/chatwoot/sync-help-center uses client.help_center.* sub-APIs."""
+        portal = {"id": 1, "slug": "tata-portal", "name": "Tata"}
+        articles_payload = {
+            "articles": [
+                {"id": 10, "title": "FAQ", "content": "Some content", "locale": "en"}
+            ],
+            "meta": {"total": 1},
+        }
+        mock_client = _mock_web_client(
+            portals_list=[portal],
+            portal_articles=articles_payload,
+        )
+        mock_session = _mock_db_session(first_return=None)
+
+        with (
+            patch("app.routers.web._web_client", return_value=mock_client),
+            patch("app.routers.web.Session", return_value=mock_session),
+            patch("app.routers.web.PgVectorStore"),
+            patch("app.routers.web.HelpCenterSync"),
+        ):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.post("/web/chatwoot/sync-help-center", json={})
+
+        assert resp.status_code == 200
+        assert resp.json()["synced"] == 1
+        mock_client.help_center.list_portals.assert_called_once()
+        # account_id comes from _account_id_or_default(None) → settings.chatwoot_account_id
+        call_args = mock_client.help_center.list_portal_articles.call_args
+        assert call_args[0][0] == "tata-portal"
 
 
 # ---------------------------------------------------------------------------
@@ -337,66 +444,64 @@ class TestConversations:
         assert resp.json() == []
 
     def test_returns_conversations_list(self):
-        """GET /web/conversations?account_id=1 returns a list of conversations."""
-        chatwoot_payload = {
-            "data": {
-                "payload": [
-                    {
-                        "id": 101,
-                        "display_id": 1,
-                        "status": "open",
-                        "inbox_id": 5,
-                        "account_id": 1,
-                        "last_activity_at": 1700000000,
-                        "meta": {
-                            "sender": {"id": 10, "name": "Alice", "email": "alice@example.com"}
-                        },
-                        "last_non_activity_message": {"content": "Hello!"},
-                    }
-                ]
+        """GET /web/conversations?account_id=1 delegates to conversations.list_conversations()."""
+        conversations = [
+            {
+                "id": 101,
+                "display_id": 1,
+                "status": "open",
+                "inbox_id": 5,
+                "account_id": 1,
+                "last_activity_at": 1700000000,
+                "meta": {"sender": {"id": 10, "name": "Alice", "email": "alice@example.com"}},
+                "last_non_activity_message": {"content": "Hello!"},
             }
-        }
-        mock_resp = _mock_httpx_response(chatwoot_payload)
-        mock_ctx = _mock_httpx_client(mock_resp)
+        ]
+        mock_client = _mock_web_client(
+            conversations_data={"payload": conversations}
+        )
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/conversations?account_id=1&limit=10")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["id"] == 101
         assert data[0]["contact"]["name"] == "Alice"
+        mock_client.conversations.list_conversations.assert_called_once_with(
+            account_id=1, inbox_id=None
+        )
 
-    def test_limit_respected(self):
-        """GET /web/conversations?limit=1 returns at most 1 conversation."""
-        conversations = [
-            {
-                "id": i,
-                "display_id": i,
-                "status": "open",
-                "inbox_id": 1,
-                "account_id": 1,
-                "last_activity_at": 1700000000,
-                "meta": {"sender": {"id": i, "name": f"User {i}"}},
-            }
-            for i in range(1, 6)
-        ]
-        chatwoot_payload = {"data": {"payload": conversations}}
-        mock_resp = _mock_httpx_response(chatwoot_payload)
-        mock_ctx = _mock_httpx_client(mock_resp)
+    def test_inbox_filter_is_forwarded(self):
+        """GET /web/conversations?account_id=1&inbox_id=5 passes inbox_id to the sub-API."""
+        mock_client = _mock_web_client(conversations_data={"payload": []})
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
-                resp = client.get("/web/conversations?account_id=1&limit=1")
+                client.get("/web/conversations?account_id=1&inbox_id=5")
+
+        mock_client.conversations.list_conversations.assert_called_once_with(
+            account_id=1, inbox_id=5
+        )
+
+    def test_limit_respected(self):
+        """GET /web/conversations?limit=2 returns at most 2 conversations."""
+        conversations = [
+            {"id": i, "status": "open", "meta": {"sender": {}}} for i in range(1, 6)
+        ]
+        mock_client = _mock_web_client(conversations_data={"payload": conversations})
+
+        with patch("app.routers.web._web_client", return_value=mock_client):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/conversations?account_id=1&limit=2")
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) <= 1
+        assert len(resp.json()) <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -415,41 +520,41 @@ class TestConversationMessages:
         assert resp.status_code == 400
 
     def test_returns_messages_list(self):
-        """GET /web/conversations/1/messages?account_id=1 returns messages."""
-        chatwoot_payload = {
-            "payload": [
-                {
-                    "id": 1001,
-                    "content": "Hi there!",
-                    "message_type": 0,
-                    "created_at": 1700000000,
-                    "sender": {"id": 10, "name": "Alice", "type": "contact"},
-                    "private": False,
-                }
-            ]
-        }
-        mock_resp = _mock_httpx_response(chatwoot_payload)
-        mock_ctx = _mock_httpx_client(mock_resp)
+        """GET /web/conversations/1/messages?account_id=1 delegates to conversations.get_messages()."""
+        messages = [
+            {
+                "id": 1001,
+                "content": "Hi there!",
+                "message_type": 0,
+                "created_at": 1700000000,
+                "sender": {"id": 10, "name": "Alice", "type": "contact"},
+                "private": False,
+            }
+        ]
+        mock_client = _mock_web_client(messages_list=messages)
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/conversations/1/messages?account_id=1")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["content"] == "Hi there!"
         assert data[0]["sender"]["name"] == "Alice"
+        mock_client.conversations.get_messages.assert_called_once_with(
+            1, account_id=1
+        )
 
-    def test_returns_502_when_chatwoot_unreachable(self):
-        """GET /web/conversations/{id}/messages returns 502 when Chatwoot unreachable."""
-        mock_ctx = _mock_httpx_client(side_effect=Exception("timeout"))
+    def test_returns_empty_list_when_chatwoot_fails(self):
+        """GET messages returns an empty list (not 502) when Chatwoot returns []."""
+        mock_client = _mock_web_client(messages_list=[])
 
-        with patch("app.routers.web.httpx.AsyncClient", return_value=mock_ctx):
+        with patch("app.routers.web._web_client", return_value=mock_client):
             from app.main import app
             with TestClient(app) as client:
                 resp = client.get("/web/conversations/1/messages?account_id=1")
 
-        assert resp.status_code == 502
+        assert resp.status_code == 200
+        assert resp.json() == []

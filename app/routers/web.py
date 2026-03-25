@@ -1,14 +1,21 @@
-"""Web API router for the v03x Web/App Frontend feature."""
+"""Web API router for the v03x Web/App Frontend feature.
+
+All Chatwoot API calls go through :class:`~app.services.chatwoot_client.ChatwootClient`
+(using the master token) so there is a single, consistent HTTP layer across the
+application — no raw ``httpx`` calls in this module.
+"""
 
 import logging
 from typing import Optional
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, create_engine, select
 
 from app.config import settings
+from app.hc_sync import HelpCenterSync
+from app.pg_vector_store import PgVectorStore
+from app.services.chatwoot_client import ChatwootClient
 from app.web_models import (
     ChatwootAccount,
     HelpCenterArticle,
@@ -29,8 +36,13 @@ except Exception as _exc:
     logger.warning("Could not create web tables at import time: %s", _exc)
 
 
-def _master_headers() -> dict:
-    return {"api_access_token": settings.chatwoot_master_token}
+def _web_client() -> ChatwootClient:
+    """Return a ChatwootClient configured with the master token.
+
+    Used for all web-facing Chatwoot API calls that require super-admin access
+    (listing accounts, inboxes, teams, conversations, messages).
+    """
+    return ChatwootClient(api_token=settings.chatwoot_master_token)
 
 
 def _account_id_or_default(account_id: Optional[int]) -> Optional[int]:
@@ -66,57 +78,36 @@ class SyncHelpCenterBody(BaseModel):
 
 
 @router.get("/chatwoot/accounts")
-async def get_chatwoot_accounts():
-    """Fetch accounts from Chatwoot API using the master token."""
-    url = f"{settings.chatwoot_base_url}/api/v1/accounts"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=_master_headers())
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, list) else data.get("data", data)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chatwoot unreachable: {exc}") from exc
+def get_chatwoot_accounts():
+    """Fetch accounts from Chatwoot using the master token (super-admin API)."""
+    client = _web_client()
+    accounts = client.accounts.list()
+    if accounts == [] and not settings.chatwoot_master_token:
+        raise HTTPException(
+            status_code=502,
+            detail="CHATWOOT_MASTER_TOKEN is not set — cannot list accounts.",
+        )
+    return accounts
 
 
 @router.get("/chatwoot/inboxes")
-async def get_chatwoot_inboxes(account_id: Optional[int] = Query(default=None)):
+def get_chatwoot_inboxes(account_id: Optional[int] = Query(default=None)):
     """Fetch inboxes from Chatwoot for a given account."""
     aid = _account_id_or_default(account_id)
     if not aid:
         return []
-    url = f"{settings.chatwoot_base_url}/api/v1/accounts/{aid}/inboxes"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=_master_headers())
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("payload", data) if isinstance(data, dict) else data
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chatwoot unreachable: {exc}") from exc
+    client = _web_client()
+    return client.inboxes.list(account_id=aid)
 
 
 @router.get("/chatwoot/teams")
-async def get_chatwoot_teams(account_id: Optional[int] = Query(default=None)):
+def get_chatwoot_teams(account_id: Optional[int] = Query(default=None)):
     """Fetch teams from Chatwoot for a given account."""
     aid = _account_id_or_default(account_id)
     if not aid:
         return []
-    url = f"{settings.chatwoot_base_url}/api/v1/accounts/{aid}/teams"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=_master_headers())
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, list) else data.get("payload", data)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chatwoot unreachable: {exc}") from exc
+    client = _web_client()
+    return client.inboxes.list_teams(account_id=aid)
 
 
 @router.get("/chatwoot/help-center")
@@ -155,19 +146,15 @@ def get_help_center_articles(
 
 
 @router.post("/chatwoot/sync-help-center")
-async def sync_help_center(body: SyncHelpCenterBody):
-    """Sync help center articles from Chatwoot into the local DB."""
-    from app.pg_vector_store import PgVectorStore
-    from app.hc_sync import HelpCenterSync
-
-    aid = _account_id_or_default(body.account_id)
+def sync_help_center(body: SyncHelpCenterBody):
+    """Sync Help Center articles from Chatwoot into the local DB and RAG store."""
+    client = _web_client()
     synced = 0
 
     try:
-        vector_store = PgVectorStore()
-        hc_sync = HelpCenterSync(vector_store)
-
-        portals = hc_sync._fetch_portals()
+        # Fetch portals via the help_center sub-API
+        aid = _account_id_or_default(body.account_id)
+        portals = client.help_center.list_portals(account_id=aid)
         if body.portal_slug:
             portals = [p for p in portals if p.get("slug") == body.portal_slug]
 
@@ -176,7 +163,13 @@ async def sync_help_center(body: SyncHelpCenterBody):
                 portal_slug = portal.get("slug") or str(portal.get("id", ""))
                 if not portal_slug:
                     continue
-                articles = hc_sync._fetch_articles_for_portal(portal_slug)
+
+                # Fetch articles via the help_center sub-API
+                payload = client.help_center.list_portal_articles(
+                    portal_slug, account_id=aid
+                )
+                articles = payload.get("articles", []) if isinstance(payload, dict) else []
+
                 for article in articles:
                     article_id = article.get("id")
                     title = article.get("title", "")
@@ -209,9 +202,10 @@ async def sync_help_center(body: SyncHelpCenterBody):
 
             session.commit()
 
-        # Also sync into vector store
+        # Also push articles into the RAG vector store
         try:
-            hc_sync.run()
+            vector_store = PgVectorStore()
+            HelpCenterSync(vector_store, chatwoot_client=client).run()
         except Exception as exc:
             logger.warning("Vector store sync failed (continuing): %s", exc)
 
@@ -227,7 +221,7 @@ async def sync_help_center(body: SyncHelpCenterBody):
 
 @router.post("/config/token-api")
 def save_token_api(body: TokenApiBody):
-    """Save or update the Chatwoot API token for an account."""
+    """Save or update the TOKEN_API for a Chatwoot account."""
     try:
         with Session(_engine) as session:
             existing = session.exec(
@@ -253,7 +247,7 @@ def save_token_api(body: TokenApiBody):
 
 
 def _mask_api_key(key: str) -> str:
-    """Return a masked version of an API key, showing only the last 4 characters."""
+    """Return a masked API key showing only the last 4 characters."""
     if not key:
         return ""
     if len(key) <= 4:
@@ -269,14 +263,18 @@ def get_openai_config():
             cfg = session.exec(select(OpenAIConfig)).first()
         if not cfg:
             return {"api_key": "", "model": "gpt-4.1", "params": None}
-        return {"api_key": _mask_api_key(cfg.api_key), "model": cfg.model, "params": cfg.params}
+        return {
+            "api_key": _mask_api_key(cfg.api_key),
+            "model": cfg.model,
+            "params": cfg.params,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/config/openai")
 def save_openai_config(body: OpenAIConfigBody):
-    """Save OpenAI config to DB."""
+    """Persist OpenAI config to DB."""
     try:
         with Session(_engine) as session:
             cfg = session.exec(select(OpenAIConfig)).first()
@@ -306,62 +304,55 @@ def save_openai_config(body: OpenAIConfigBody):
 
 
 @router.get("/conversations")
-async def get_conversations(
+def get_conversations(
     limit: int = Query(default=50),
     account_id: Optional[int] = Query(default=None),
     inbox_id: Optional[int] = Query(default=None),
 ):
-    """Fetch conversations from Chatwoot."""
+    """Fetch conversations from Chatwoot with optional account/inbox filters."""
     aid = _account_id_or_default(account_id)
     if not aid:
         return []
-    url = f"{settings.chatwoot_base_url}/api/v1/accounts/{aid}/conversations"
-    params: dict = {"page": 1}
-    if inbox_id:
-        params["inbox_id"] = inbox_id
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=_master_headers(), params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    client = _web_client()
+    payload = client.conversations.list_conversations(
+        account_id=aid, inbox_id=inbox_id
+    )
 
-        payload = data.get("data", {}) if isinstance(data, dict) else {}
-        conversations = payload.get("payload", []) if isinstance(payload, dict) else payload
-        if not isinstance(conversations, list):
-            conversations = []
+    # Chatwoot wraps conversations under data.payload
+    conversations = payload.get("payload", []) if isinstance(payload, dict) else []
+    if not isinstance(conversations, list):
+        conversations = []
 
-        result = []
-        for conv in conversations[:limit]:
-            meta = conv.get("meta", {}) or {}
-            contact = meta.get("sender", {}) or {}
-            result.append(
-                {
-                    "id": conv.get("id"),
-                    "display_id": conv.get("display_id"),
-                    "status": conv.get("status"),
-                    "contact": {
-                        "id": contact.get("id"),
-                        "name": contact.get("name"),
-                        "email": contact.get("email"),
-                    },
-                    "inbox_id": conv.get("inbox_id"),
-                    "account_id": conv.get("account_id"),
-                    "last_activity_at": conv.get("last_activity_at"),
-                    "last_message": conv.get("last_non_activity_message", {}).get("content")
+    result = []
+    for conv in conversations[:limit]:
+        meta = conv.get("meta", {}) or {}
+        contact = meta.get("sender", {}) or {}
+        result.append(
+            {
+                "id": conv.get("id"),
+                "display_id": conv.get("display_id"),
+                "status": conv.get("status"),
+                "contact": {
+                    "id": contact.get("id"),
+                    "name": contact.get("name"),
+                    "email": contact.get("email"),
+                },
+                "inbox_id": conv.get("inbox_id"),
+                "account_id": conv.get("account_id"),
+                "last_activity_at": conv.get("last_activity_at"),
+                "last_message": (
+                    conv.get("last_non_activity_message", {}).get("content")
                     if conv.get("last_non_activity_message")
-                    else None,
-                }
-            )
-        return result
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chatwoot unreachable: {exc}") from exc
+                    else None
+                ),
+            }
+        )
+    return result
 
 
 @router.get("/conversations/{conversation_id}/messages")
-async def get_conversation_messages(
+def get_conversation_messages(
     conversation_id: int,
     account_id: Optional[int] = Query(default=None),
 ):
@@ -369,36 +360,25 @@ async def get_conversation_messages(
     aid = _account_id_or_default(account_id)
     if not aid:
         raise HTTPException(status_code=400, detail="account_id is required")
-    url = f"{settings.chatwoot_base_url}/api/v1/accounts/{aid}/conversations/{conversation_id}/messages"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, headers=_master_headers())
-        resp.raise_for_status()
-        data = resp.json()
 
-        messages = data.get("payload", []) if isinstance(data, dict) else data
-        if not isinstance(messages, list):
-            messages = []
+    client = _web_client()
+    messages = client.conversations.get_messages(conversation_id, account_id=aid)
 
-        return [
-            {
-                "id": msg.get("id"),
-                "content": msg.get("content"),
-                "message_type": msg.get("message_type"),
-                "sender": {
-                    "id": msg.get("sender", {}).get("id") if msg.get("sender") else None,
-                    "name": msg.get("sender", {}).get("name") if msg.get("sender") else None,
-                    "type": msg.get("sender", {}).get("type") if msg.get("sender") else None,
-                },
-                "created_at": msg.get("created_at"),
-                "private": msg.get("private", False),
-            }
-            for msg in messages
-        ]
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chatwoot unreachable: {exc}") from exc
+    return [
+        {
+            "id": msg.get("id"),
+            "content": msg.get("content"),
+            "message_type": msg.get("message_type"),
+            "sender": {
+                "id": msg.get("sender", {}).get("id") if msg.get("sender") else None,
+                "name": msg.get("sender", {}).get("name") if msg.get("sender") else None,
+                "type": msg.get("sender", {}).get("type") if msg.get("sender") else None,
+            },
+            "created_at": msg.get("created_at"),
+            "private": msg.get("private", False),
+        }
+        for msg in messages
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -407,20 +387,17 @@ async def get_conversation_messages(
 
 
 @router.get("/status")
-async def get_status():
+def get_status():
     """Check connection status for Chatwoot, DB, and OpenAI."""
     chatwoot_connected = False
     db_connected = False
     openai_configured = False
 
-    # Check Chatwoot
+    # Check Chatwoot reachability via accounts.list()
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{settings.chatwoot_base_url}/auth/sign_in",
-                headers=_master_headers(),
-            )
-        chatwoot_connected = resp.status_code < 500
+        client = _web_client()
+        client.accounts.list()
+        chatwoot_connected = True
     except Exception:
         chatwoot_connected = False
 
