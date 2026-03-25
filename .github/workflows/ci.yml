@@ -73,6 +73,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      pull-requests: read
 
     steps:
       - name: Checkout repository
@@ -93,6 +94,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get associated PR number (for push events)
+        id: pr_info
+        if: github.event_name == 'push'
+        run: |
+          PR_NUM=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --head "${{ github.ref_name }}" \
+            --state open \
+            --json number \
+            --jq 'if length > 0 then (.[0].number | tostring) else "" end' 2>/dev/null || echo "")
+          # Strip any non-digit characters to guard against unexpected output
+          PR_NUM="${PR_NUM//[^0-9]/}"
+          echo "number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          [ -n "$PR_NUM" ] && echo "enabled=true" >> "$GITHUB_OUTPUT" || echo "enabled=false" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -106,6 +125,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
+            type=raw,value=pr-${{ steps.pr_info.outputs.number }},enable=${{ steps.pr_info.outputs.enabled == 'true' && steps.pr_info.outputs.number != '' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
