@@ -29,12 +29,6 @@ router = APIRouter(prefix="/web", tags=["web"])
 
 _engine = create_engine(settings.postgres_dsn)
 
-# Ensure tables exist when the router module is loaded.
-try:
-    create_web_tables(_engine)
-except Exception as _exc:
-    logger.warning("Could not create web tables at import time: %s", _exc)
-
 
 def _web_client() -> ChatwootClient:
     """Return a ChatwootClient configured with the master token.
