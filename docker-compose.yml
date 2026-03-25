@@ -1,19 +1,16 @@
 version: "3.9"
 
-# Tata agent uses its own PostgreSQL database (tata_agent).
-# The agent creates the database automatically on first start using the
-# POSTGRES_USER and POSTGRES_PASSWORD from .env (the same credentials
-# used by the postgres container).
+# Tata agent — single container serves both the FastAPI backend (webhook/API)
+# and the Next.js web UI as static files, all on port 8000.
 #
-# Required env files:
-#   .env      — PostgreSQL credentials and all application settings.
-#               Copy .env.example to .env and fill in your values.
+# Required:
+#   .env — PostgreSQL credentials and application settings.
+#           Copy .env.example to .env and fill in your values.
 #
-# Access points:
-#   http://localhost:3000  — Web configuration UI (tata-frontend)
-#   http://localhost:8000  — FastAPI backend / webhook endpoint (tata-agent)
-#                            Visiting http://localhost:8000 in a browser
-#                            redirects automatically to the frontend.
+# Access:
+#   http://localhost:8000       — Web UI (Next.js static export)
+#   http://localhost:8000/api/  — REST API
+#   http://localhost:8000/webhook — Chatwoot webhook
 
 services:
   postgres:
@@ -44,17 +41,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  tata-frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://tata-agent:8000
-    depends_on:
-      - tata-agent
-    restart: unless-stopped
-
 volumes:
   pgdata:
+

@@ -9,11 +9,12 @@ Two sets of tables are managed here:
 **Tata admin tables**:
   tata_accounts  — Chatwoot account connections (name, base_url, account_id).
                    Credentials are stored in tata_variables, not here.
-  tata_variables — Unified env-var-style config store (Chatwoot, database,
-                   OpenAI, agent settings). Each row has a key, value,
-                   human-readable description, category tag, and a flag that
-                   marks sensitive values so the API never returns their value
-                   in plain text.
+  tata_variables — Config store for Chatwoot credentials, OpenAI settings
+                   and agent behaviour. Database connection parameters are
+                   NOT stored here — they come from the .env file only.
+                   Each row has a key, value, human-readable description,
+                   category tag, and a flag that marks sensitive values so
+                   the API never returns their value in plain text.
 
 Call :func:`ensure_schema` once at application startup (after the database
 itself has been created by :mod:`app.db_bootstrap`).
@@ -312,6 +313,9 @@ class TataVariable(SQLModel, table=True):
 # ---------------------------------------------------------------------------
 
 #: Variables seeded the first time the schema is created (empty values).
+#: Database connection parameters are intentionally omitted — they are read
+#: exclusively from the ``.env`` file / environment variables (POSTGRES_DSN
+#: or POSTGRES_HOST/PORT/USER/PASSWORD/DB).
 _DEFAULT_VARIABLES: list[dict] = [
     # Chatwoot
     {
@@ -331,41 +335,6 @@ _DEFAULT_VARIABLES: list[dict] = [
         "description": "Chatwoot API access token",
         "category": "chatwoot",
         "is_secret": True,
-    },
-    # Database
-    {
-        "key": "POSTGRES_HOST",
-        "description": "PostgreSQL server hostname or IP",
-        "category": "database",
-        "is_secret": False,
-        "default": "localhost",
-    },
-    {
-        "key": "POSTGRES_PORT",
-        "description": "PostgreSQL port (default: 5432)",
-        "category": "database",
-        "is_secret": False,
-        "default": "5432",
-    },
-    {
-        "key": "POSTGRES_USER",
-        "description": "Database user",
-        "category": "database",
-        "is_secret": False,
-        "default": "postgres",
-    },
-    {
-        "key": "POSTGRES_PASSWORD",
-        "description": "Database password",
-        "category": "database",
-        "is_secret": True,
-    },
-    {
-        "key": "POSTGRES_DB",
-        "description": "Database name",
-        "category": "database",
-        "is_secret": False,
-        "default": "tata_agent",
     },
     # OpenAI
     {

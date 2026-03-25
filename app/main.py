@@ -353,12 +353,14 @@ async def lifespan(application: FastAPI):
 app = FastAPI(title="Tata Customer Agent", version="1.0.0", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
-# CORS — allow the Next.js frontend (dev: port 3000, prod: same origin)
+# CORS — same-origin in production; allow localhost:8000 in development.
+# When the frontend is served as static files from this same FastAPI process
+# on port 8000, no cross-origin requests are needed.
 # ---------------------------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=["http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -415,19 +417,6 @@ def _is_incoming_customer_message(payload: dict) -> bool:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
-
-@app.get("/")
-async def root_redirect():
-    """Redirect browser requests to the Next.js frontend.
-
-    The web UI is served by the ``tata-frontend`` container on port 3000.
-    Redirecting from the API root prevents a confusing 404 when users open
-    ``http://localhost:8000`` in a browser.
-    """
-    from fastapi.responses import RedirectResponse
-
-    return RedirectResponse(url="http://localhost:3000", status_code=302)
 
 
 @app.get("/health")
@@ -494,3 +483,21 @@ async def chatwoot_webhook(
     _message_buffer.add_message(conversation_id, user_text)
 
     return {"status": "queued", "conversation_id": conversation_id}
+
+
+# ---------------------------------------------------------------------------
+# Serve Next.js static export from the same process on port 8000.
+#
+# The Dockerfile builds the Next.js app with ``output: "export"`` and copies
+# the resulting ``out/`` directory to ``/app/static/`` inside the container.
+# Mounting StaticFiles *after* all API routes ensures the API takes precedence:
+#   /health, /webhook, /api/* → FastAPI handlers above
+#   everything else          → Next.js static files
+# ---------------------------------------------------------------------------
+
+import os as _os
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+
+_STATIC_DIR = _os.path.join(_os.path.dirname(__file__), "..", "static")
+if _os.path.isdir(_STATIC_DIR):
+    app.mount("/", _StaticFiles(directory=_STATIC_DIR, html=True), name="frontend")

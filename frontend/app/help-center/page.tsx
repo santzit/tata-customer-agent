@@ -138,14 +138,14 @@ export default function HelpCenterPage() {
                     {article.title || article.id}
                   </div>
                   <div className="text-xs text-gray-400 mt-0.5 line-clamp-2">
-                    {article.text.slice(0, 180)}
-                    {article.text.length > 180 ? "…" : ""}
+                    {article.content.slice(0, 180)}
+                    {article.content.length > 180 ? "…" : ""}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
-                  {article.portal_name && (
+                  {article.portal_slug && (
                     <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">
-                      {article.portal_name}
+                      {article.portal_slug}
                     </span>
                   )}
                   {article.portal_slug && (

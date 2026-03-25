@@ -15,12 +15,6 @@ const CATEGORIES: { key: string; label: string; icon: string; description: strin
     description: "Connection settings for your Chatwoot instance",
   },
   {
-    key: "database",
-    label: "Database",
-    icon: "🗄️",
-    description: "PostgreSQL connection parameters",
-  },
-  {
     key: "openai",
     label: "OpenAI",
     icon: "🤖",
@@ -157,7 +151,9 @@ export default function VariablesPage() {
 
             {/* Variable rows */}
             <div className="divide-y divide-gray-100">
-              {catVars.map((v) => (
+              {catVars.map((v) => {
+                const isSet = v.is_secret && v.value === "***";
+                return (
                 <div key={v.key} className="px-6 py-4 grid grid-cols-1 sm:grid-cols-[1fr_1.5fr] gap-3 items-start">
                   {/* Label + description */}
                   <div>
@@ -170,7 +166,7 @@ export default function VariablesPage() {
                           secret
                         </span>
                       )}
-                      {v.is_set && (
+                      {isSet && (
                         <span className="text-xs px-1.5 py-0.5 bg-green-50 text-green-700 rounded font-medium">
                           set
                         </span>
@@ -188,7 +184,7 @@ export default function VariablesPage() {
                     type={v.is_secret ? "password" : "text"}
                     placeholder={
                       v.is_secret
-                        ? v.is_set
+                        ? isSet
                           ? "Leave blank to keep current value"
                           : "Enter value…"
                         : ""
@@ -202,7 +198,8 @@ export default function VariablesPage() {
                     spellCheck={false}
                   />
                 </div>
-              ))}
+              );
+              })}
             </div>
           </section>
         );
