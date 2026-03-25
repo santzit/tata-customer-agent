@@ -104,6 +104,12 @@ export interface TataVariable {
 // API client objects
 // ---------------------------------------------------------------------------
 
+export interface ChatwootAccount {
+  id: number;
+  name: string;
+  role: string;
+}
+
 export const accountsApi = {
   list: () => request<Account[]>("/api/accounts"),
   create: (data: AccountCreate) =>
@@ -117,6 +123,7 @@ export const accountsApi = {
     ),
   inboxes: (id: number) =>
     request<Record<string, unknown>[]>(`/api/accounts/${id}/inboxes`),
+  fromChatwoot: () => request<ChatwootAccount[]>("/api/accounts/from-chatwoot"),
 };
 
 export const settingsApi = {

@@ -61,6 +61,54 @@ class AccountOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/from-chatwoot", response_model=list[dict])
+def fetch_accounts_from_chatwoot():
+    """Discover Chatwoot accounts accessible with the configured credentials.
+
+    Reads ``CHATWOOT_BASE_URL`` and ``CHATWOOT_API_TOKEN`` from
+    ``tata_variables`` and calls ``GET /api/v1/profile`` to retrieve the list
+    of accounts the API token belongs to.
+
+    Returns a list of dicts with ``id``, ``name``, and ``role`` for each account.
+    """
+    base_url = db_models.get_variable_value("CHATWOOT_BASE_URL")
+    token = db_models.get_variable_value("CHATWOOT_API_TOKEN")
+
+    if not base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="CHATWOOT_BASE_URL not configured in Variables",
+        )
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="CHATWOOT_API_TOKEN not configured in Variables",
+        )
+
+    # GET /api/v1/profile returns:
+    # { "id": 1, "name": "...", "accounts": [{"id": 1, "name": "...", "role": "administrator"}, ...] }
+    url = f"{base_url.rstrip('/')}/api/v1/profile"
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(url, headers={"api_access_token": token})
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Chatwoot returned HTTP {exc.response.status_code}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    accounts = data.get("accounts", []) if isinstance(data, dict) else []
+    return [
+        {"id": acct.get("id"), "name": acct.get("name", ""), "role": acct.get("role", "")}
+        for acct in accounts
+        if isinstance(acct, dict)
+    ]
+
+
 @router.get("", response_model=list[AccountOut])
 def list_accounts():
     """Return all configured Chatwoot account connections."""

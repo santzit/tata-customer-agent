@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { accountsApi, type Account, type AccountCreate } from "@/lib/api";
+import { accountsApi, type Account, type AccountCreate, type ChatwootAccount } from "@/lib/api";
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -12,6 +12,10 @@ export default function AccountsPage() {
   const [inboxes, setInboxes] = useState<Record<number, { id: number; name: string }[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [chatwootAccounts, setChatwootAccounts] = useState<ChatwootAccount[] | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [importing, setImporting] = useState<number | null>(null);
 
   const [form, setForm] = useState<AccountCreate>({
     name: "",
@@ -82,22 +86,104 @@ export default function AccountsPage() {
     setInboxes((p) => ({ ...p, [id]: list.map((i) => ({ id: i.id as number, name: i.name as string })) }));
   }
 
+  async function fetchFromChatwoot() {
+    setFetching(true);
+    setFetchError(null);
+    setChatwootAccounts(null);
+    try {
+      const result = await accountsApi.fromChatwoot();
+      setChatwootAccounts(result);
+    } catch (err) {
+      setFetchError(err instanceof Error ? err.message : "Failed to fetch from Chatwoot");
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  async function importChatwootAccount(acct: ChatwootAccount) {
+    setImporting(acct.id);
+    try {
+      await accountsApi.create({ name: acct.name, chatwoot_account_id: acct.id, is_active: true });
+      load();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Ignore uniqueness violations (account already imported) but surface other errors
+      if (!msg.toLowerCase().includes("unique") && !msg.toLowerCase().includes("duplicate") && !msg.toLowerCase().includes("already")) {
+        setFetchError(`Import failed for "${acct.name}": ${msg}`);
+      } else {
+        // Account already exists — refresh the list so UI shows ✓ Imported
+        load();
+      }
+    } finally {
+      setImporting(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Accounts</h1>
-        <button
-          onClick={openNewForm}
-          className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-        >
-          + Add Account
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={fetchFromChatwoot}
+            disabled={fetching}
+            className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            {fetching ? "Fetching…" : "↓ Import from Chatwoot"}
+          </button>
+          <button
+            onClick={openNewForm}
+            className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+          >
+            + Add Account
+          </button>
+        </div>
       </div>
 
       <p className="text-sm text-gray-500">
         Chatwoot credentials (Base URL, API Token) are managed in{" "}
         <a href="/variables" className="text-indigo-600 hover:underline">Variables</a>.
+        Use <strong>Import from Chatwoot</strong> to automatically discover accounts.
       </p>
+
+      {/* Chatwoot import panel */}
+      {fetchError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
+          {fetchError}
+        </div>
+      )}
+      {chatwootAccounts !== null && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
+          <div className="text-sm font-medium text-blue-800">
+            {chatwootAccounts.length === 0
+              ? "No accounts found on the Chatwoot instance."
+              : `${chatwootAccounts.length} account(s) found on Chatwoot:`}
+          </div>
+          {chatwootAccounts.map((acct) => {
+            const alreadyImported = accounts.some((a) => a.chatwoot_account_id === acct.id);
+            return (
+              <div key={acct.id} className="flex items-center justify-between bg-white rounded-lg px-4 py-2 border border-blue-100">
+                <div>
+                  <span className="font-medium text-sm">{acct.name}</span>
+                  <span className="text-xs text-gray-400 ml-2">ID: {acct.id}</span>
+                  {acct.role && <span className="text-xs text-gray-400 ml-2">({acct.role})</span>}
+                </div>
+                {alreadyImported ? (
+                  <span className="text-xs text-green-600 font-medium">✓ Imported</span>
+                ) : (
+                  <button
+                    onClick={() => importChatwootAccount(acct)}
+                    disabled={importing === acct.id}
+                    className="text-xs px-3 py-1 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {importing === acct.id ? "Importing…" : "Import"}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Form modal */}
       {showForm && (
