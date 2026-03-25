@@ -59,6 +59,10 @@ class TokenApiBody(BaseModel):
 class OpenAIConfigBody(BaseModel):
     api_key: str = ""
     model: str = "gpt-4.1"
+    api_endpoint: str = ""
+    embedding_model_small: str = ""
+    embedding_model_large: str = ""
+    llm_provider: str = "openai"
     params: Optional[dict] = None
 
 
@@ -362,10 +366,22 @@ def get_openai_config():
         with Session(_engine) as session:
             cfg = session.exec(select(OpenAIConfig)).first()
         if not cfg:
-            return {"api_key": "", "model": "gpt-4.1", "params": None}
+            return {
+                "api_key": "",
+                "model": "gpt-4.1",
+                "api_endpoint": "",
+                "embedding_model_small": "",
+                "embedding_model_large": "",
+                "llm_provider": "openai",
+                "params": None,
+            }
         return {
             "api_key": _mask_api_key(cfg.api_key),
             "model": cfg.model,
+            "api_endpoint": cfg.api_endpoint,
+            "embedding_model_small": cfg.embedding_model_small,
+            "embedding_model_large": cfg.embedding_model_large,
+            "llm_provider": cfg.llm_provider,
             "params": cfg.params,
         }
     except Exception as exc:
@@ -382,6 +398,10 @@ def save_openai_config(body: OpenAIConfigBody):
                 if body.api_key:
                     cfg.api_key = body.api_key
                 cfg.model = body.model
+                cfg.api_endpoint = body.api_endpoint
+                cfg.embedding_model_small = body.embedding_model_small
+                cfg.embedding_model_large = body.embedding_model_large
+                cfg.llm_provider = body.llm_provider
                 cfg.params = body.params
                 session.add(cfg)
             else:
@@ -389,6 +409,10 @@ def save_openai_config(body: OpenAIConfigBody):
                     OpenAIConfig(
                         api_key=body.api_key,
                         model=body.model,
+                        api_endpoint=body.api_endpoint,
+                        embedding_model_small=body.embedding_model_small,
+                        embedding_model_large=body.embedding_model_large,
+                        llm_provider=body.llm_provider,
                         params=body.params,
                     )
                 )

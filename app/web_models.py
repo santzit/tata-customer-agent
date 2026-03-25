@@ -52,6 +52,10 @@ class OpenAIConfig(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     api_key: str = ""
     model: str = "gpt-4.1"
+    api_endpoint: str = ""
+    embedding_model_small: str = ""
+    embedding_model_large: str = ""
+    llm_provider: str = "openai"
     params: Optional[dict] = Field(default=None, sa_column=SAColumn(sa.JSON))
 
 

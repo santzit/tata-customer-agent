@@ -78,6 +78,10 @@ export interface Message {
 export interface OpenAIConfig {
   api_key?: string;
   model?: string;
+  api_endpoint?: string;
+  embedding_model_small?: string;
+  embedding_model_large?: string;
+  llm_provider?: string;
   params?: Record<string, unknown>;
 }
 
