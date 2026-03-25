@@ -1,5 +1,8 @@
 """Application configuration loaded from environment variables."""
 
+import urllib.parse
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,7 +33,17 @@ class Settings(BaseSettings):
     # Leave both blank to skip the automatic database-creation step.
     postgres_user: str = "postgres"
     postgres_password: str = "postgres"
-    postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/tata_agent"
+    # Individual connection components — used to build postgres_dsn when POSTGRES_DSN
+    # is not set explicitly.  POSTGRES_HOST is the most important one to set when
+    # running inside Docker Compose (e.g. POSTGRES_HOST=postgres or tata_postgres).
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "tata_agent"
+    # Full DSN takes precedence when set; otherwise it is built from the individual
+    # components above (postgres_user, postgres_password, postgres_host, postgres_port,
+    # postgres_db).  Tip: setting POSTGRES_HOST in .env is usually simpler than
+    # writing out the full DSN.
+    postgres_dsn: str = ""
     pg_vector_table: str = "tata_knowledge"
     pg_memory_table: str = "tata_conversations"
     memory_max_turns: int = 10  # number of past conversation turns to include
@@ -69,6 +82,24 @@ class Settings(BaseSettings):
         if self.openai_api_endpoint:
             kwargs["base_url"] = self.openai_api_endpoint
         return OpenAI(**kwargs)
+
+    @model_validator(mode="after")
+    def _build_postgres_dsn(self) -> "Settings":
+        """Build postgres_dsn from individual components when not set explicitly.
+
+        Priority:
+        1. POSTGRES_DSN set in environment / .env  → used as-is.
+        2. Not set (empty string default)          → built from POSTGRES_HOST,
+           POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB.
+        """
+        if not self.postgres_dsn:
+            user = urllib.parse.quote(self.postgres_user, safe="")
+            password = urllib.parse.quote(self.postgres_password, safe="")
+            self.postgres_dsn = (
+                f"postgresql://{user}:{password}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
+        return self
 
 
 settings = Settings()

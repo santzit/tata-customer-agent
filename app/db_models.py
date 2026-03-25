@@ -7,6 +7,7 @@ Two sets of tables are managed here:
   conversations, messages (with send-status tracking + retry).
 
 **Tata admin tables**:
+  chatwoot_instances — Chatwoot instance URL + master token for platform ops.
   tata_accounts  — Chatwoot account connections (name, base_url, account_id).
                    Credentials are stored in tata_variables, not here.
   tata_variables — Config store for Chatwoot credentials, OpenAI settings
@@ -253,6 +254,36 @@ class Message(SQLModel, table=True):
 # ---------------------------------------------------------------------------
 
 
+class ChatwootInstance(SQLModel, table=True):
+    """Chatwoot instance connection details for super-admin / platform operations.
+
+    ``instance_url`` is the base URL of the Chatwoot deployment
+    (e.g. ``https://app.chatwoot.com``).  ``master_token`` is the
+    super-admin API token (Chatwoot *master_token*) used for operations
+    that require platform-level access.  It is stored as a secret and must
+    never be returned in plain text by the API.
+    """
+
+    __tablename__ = "chatwoot_instances"
+    __table_args__ = {"extend_existing": True}
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_url: str = Field(description="Chatwoot instance URL (e.g. https://app.chatwoot.com)")
+    master_token: str = Field(
+        default="",
+        description="Chatwoot super-admin master token",
+    )
+    is_active: bool = Field(default=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+
+
 class TataAccount(SQLModel, table=True):
     """Chatwoot account connection configured via the web UI.
 
@@ -416,7 +447,7 @@ def ensure_schema(dsn: str | None = None) -> None:
     logger.info(
         "Tata entity schema ensured via SQLModel: users, accounts, inboxes, "
         "portals, portal_articles, portal_inboxes, conversations, messages, "
-        "tata_accounts, tata_variables."
+        "chatwoot_instances, tata_accounts, tata_variables."
     )
 
 
