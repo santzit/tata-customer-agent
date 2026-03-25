@@ -33,15 +33,13 @@ class ChatwootClient:
         conversation_id: int,
         message: str,
         *,
-        message_type: str = "outgoing",
         private: bool = False,
     ) -> dict:
-        """Send a message to a Chatwoot conversation.
+        """Send a plain-text message to a Chatwoot conversation.
 
         Args:
             conversation_id: The Chatwoot conversation ID.
             message: The text content to send.
-            message_type: ``"outgoing"`` for agent replies visible to contacts.
             private: When ``True`` the message is a private note.
 
         Returns:
@@ -56,7 +54,7 @@ class ChatwootClient:
         )
         payload = {
             "content": message,
-            "message_type": message_type,
+            "message_type": "outgoing",
             "private": private,
         }
         logger.debug("Sending message to conversation %d: %s", conversation_id, message[:80])
@@ -109,9 +107,7 @@ class ChatwootClient:
         """Hand over a conversation from the bot to a human agent.
 
         Changes the conversation status from ``"pending"`` (bot-handled) to
-        ``"open"`` so that human agents can take over.  Once open, the bot
-        stops receiving events for that conversation unless the status is
-        switched back to ``"pending"``.
+        ``"open"`` so that human agents can take over.
 
         Args:
             conversation_id: The Chatwoot conversation ID.
