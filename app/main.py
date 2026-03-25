@@ -477,3 +477,19 @@ async def chatwoot_webhook(
     _message_buffer.add_message(conversation_id, user_text)
 
     return {"status": "queued", "conversation_id": conversation_id}
+
+
+
+# ---------------------------------------------------------------------------
+# Serve Next.js static frontend from /app/static (populated by Dockerfile)
+# ---------------------------------------------------------------------------
+
+import os
+from pathlib import Path
+
+_STATIC_DIR = Path(__file__).parent.parent / "static"
+
+if _STATIC_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="frontend")
+    logger.info("Serving Next.js frontend from %s", _STATIC_DIR)
