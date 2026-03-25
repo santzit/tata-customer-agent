@@ -8,6 +8,7 @@ langgraph>=0.2.0
 langchain-core>=0.3.0
 pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
+sqlmodel>=0.0.37
 
 # Testing
 pytest>=8.0.0

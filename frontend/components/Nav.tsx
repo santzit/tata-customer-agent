@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/accounts", label: "Accounts" },
+  { href: "/conversations", label: "Conversations" },
   { href: "/help-center", label: "Help Center" },
   { href: "/openai-settings", label: "OpenAI" },
 ];
