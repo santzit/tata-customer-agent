@@ -10,6 +10,9 @@ from app.agent import run_agent
 from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
+from app.db_bootstrap import ensure_database
+from app.db_models import ensure_schema
+from app.hc_sync import HelpCenterSync
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
@@ -115,6 +118,26 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global _vector_store, _conversation_memory, _chatwoot_client, _message_buffer
+
+    # ------------------------------------------------------------------
+    # 1. Ensure the tata_agent database exists (creates it if missing).
+    # ------------------------------------------------------------------
+    try:
+        ensure_database()
+    except Exception as exc:
+        logger.warning("Database bootstrap failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
+    # 2. Ensure all entity tables exist in tata_agent.
+    # ------------------------------------------------------------------
+    try:
+        ensure_schema()
+    except Exception as exc:
+        logger.warning("Entity schema setup failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
+    # 3. Initialise RAG vector store and conversation memory.
+    # ------------------------------------------------------------------
     _vector_store = PgVectorStore()
     _conversation_memory = ConversationMemory()
     _chatwoot_client = ChatwootClient()
@@ -127,6 +150,17 @@ async def lifespan(application: FastAPI):
             store.ensure_collection()
         except Exception as exc:
             logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 4. Sync Help Center articles into the RAG vector store.
+    # ------------------------------------------------------------------
+    try:
+        logger.info("Triggering Help Center article sync into the RAG vector store.")
+        hc_sync = HelpCenterSync(_vector_store)
+        hc_sync.run()
+    except Exception as exc:
+        logger.warning("Help Center sync failed at startup (continuing anyway): %s", exc)
+
     logger.info(
         "Chatwoot client configured: base_url=%r, account_id=%d, api_token_set=%s",
         settings.chatwoot_base_url,

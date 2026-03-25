@@ -54,6 +54,9 @@ jobs:
         env:
           # Real PostgreSQL/pgvector service (see services.postgres above).
           POSTGRES_DSN: "postgresql://postgres:postgres@localhost:5432/tata_agent"
+          # Master DSN used by db_bootstrap to create the database (already
+          # created by the service container above, so this is a no-op in CI).
+          POSTGRES_MASTER_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
           # Real OpenAI credentials (GitHub Actions secrets / variables).
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
