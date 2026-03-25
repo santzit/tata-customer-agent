@@ -1,10 +1,11 @@
 """Help Center synchronisation — index Chatwoot Help Center articles into the RAG vector store.
 
-Fetches published articles from the Chatwoot Help Center REST API and upserts
-them into the pgvector knowledge store so that the agent can retrieve relevant
-knowledge-base content when answering customer questions.
+Fetches published articles from the Chatwoot Help Center REST API via
+:class:`~app.chatwoot.ChatwootClient` and upserts them into the pgvector
+knowledge store so that the agent can retrieve relevant knowledge-base content
+when answering customer questions.
 
-API endpoints used:
+API endpoints used (via ChatwootClient):
   GET /api/v1/accounts/{account_id}/portals
       → List all portals (knowledge bases).
   GET /api/v1/accounts/{account_id}/portals/{portal_slug}/articles?status=published&page=N
@@ -28,8 +29,7 @@ with documents ingested via other pipelines (e.g. :mod:`app.ingest_docs`).
 
 import logging
 
-import httpx
-
+from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.pg_vector_store import PgVectorStore
 
@@ -42,52 +42,28 @@ class HelpCenterSync:
     """Fetches published Help Center articles from the Chatwoot API and indexes
     them into the pgvector RAG store.
 
+    Uses :class:`~app.chatwoot.ChatwootClient` for all HTTP communication with
+    the Chatwoot Help Center REST API.
+
     Args:
         vector_store: A :class:`~app.pg_vector_store.PgVectorStore` instance
             to upsert articles into.
-        base_url: Chatwoot base URL.  Defaults to ``settings.chatwoot_base_url``.
-        api_token: Chatwoot API access token.  Defaults to
-            ``settings.chatwoot_api_token``.
-        account_id: Chatwoot account ID.  Defaults to
-            ``settings.chatwoot_account_id``.
+        chatwoot_client: An optional pre-configured
+            :class:`~app.chatwoot.ChatwootClient`.  When omitted a new client
+            is created from the application :mod:`~app.config`.
     """
 
     def __init__(
         self,
         vector_store: PgVectorStore,
-        base_url: str | None = None,
-        api_token: str | None = None,
-        account_id: int | None = None,
+        chatwoot_client: ChatwootClient | None = None,
     ) -> None:
         self._store = vector_store
-        self._base_url = (base_url or settings.chatwoot_base_url).rstrip("/")
-        self._api_token = api_token or settings.chatwoot_api_token
-        self._account_id = (
-            account_id if account_id is not None else settings.chatwoot_account_id
-        )
-
-    def _headers(self) -> dict[str, str]:
-        return {"api_access_token": self._api_token}
+        self._client = chatwoot_client or ChatwootClient()
 
     def _fetch_portals(self) -> list[dict]:
         """Return all portals for the configured Chatwoot account."""
-        url = f"{self._base_url}/api/v1/accounts/{self._account_id}/portals"
-        try:
-            with httpx.Client(timeout=30) as client:
-                response = client.get(url, headers=self._headers())
-                response.raise_for_status()
-                data = response.json()
-        except Exception as exc:
-            logger.warning("HelpCenterSync: failed to fetch portals: %s", exc)
-            return []
-
-        # Chatwoot returns {"payload": [...]} for the portals list.
-        portals = data.get("payload", data) if isinstance(data, dict) else data
-        if not isinstance(portals, list):
-            logger.warning(
-                "HelpCenterSync: unexpected portals response shape: %r", type(data)
-            )
-            return []
+        portals = self._client.list_portals()
         logger.info("HelpCenterSync: found %d portal(s).", len(portals))
         return portals
 
@@ -95,42 +71,15 @@ class HelpCenterSync:
         """Return all published articles for *portal_slug*, handling pagination."""
         articles: list[dict] = []
         page = 1
-        base_url = (
-            f"{self._base_url}/api/v1/accounts/{self._account_id}"
-            f"/portals/{portal_slug}/articles"
-        )
         while True:
-            try:
-                with httpx.Client(timeout=30) as client:
-                    response = client.get(
-                        base_url,
-                        params={"status": "published", "page": page},
-                        headers=self._headers(),
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-            except Exception as exc:
-                logger.warning(
-                    "HelpCenterSync: failed to fetch articles for portal '%s' page %d: %s",
-                    portal_slug,
-                    page,
-                    exc,
-                )
+            payload = self._client.list_portal_articles(
+                portal_slug, status="published", page=page
+            )
+            if not payload:
                 break
 
-            # Chatwoot returns {"payload": {"articles": [...], "meta": {...}}}
-            payload = data.get("payload", {}) if isinstance(data, dict) else {}
-            page_articles = payload.get("articles", []) if isinstance(payload, dict) else []
-
-            if not isinstance(page_articles, list):
-                logger.warning(
-                    "HelpCenterSync: unexpected articles payload shape for portal '%s': %r",
-                    portal_slug,
-                    type(page_articles),
-                )
-                break
-
-            if not page_articles:
+            page_articles = payload.get("articles", [])
+            if not isinstance(page_articles, list) or not page_articles:
                 break
 
             articles.extend(page_articles)
@@ -151,7 +100,7 @@ class HelpCenterSync:
         Returns:
             The number of articles that were upserted.
         """
-        if not self._api_token:
+        if not self._client.api_token:
             logger.info(
                 "HelpCenterSync: CHATWOOT_API_TOKEN is not set — skipping HC sync."
             )
@@ -251,4 +200,5 @@ def _run_cli() -> None:
 
 if __name__ == "__main__":
     _run_cli()
+
 
