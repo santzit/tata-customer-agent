@@ -417,6 +417,19 @@ def _is_incoming_customer_message(payload: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/")
+async def root_redirect():
+    """Redirect browser requests to the Next.js frontend.
+
+    The web UI is served by the ``tata-frontend`` container on port 3000.
+    Redirecting from the API root prevents a confusing 404 when users open
+    ``http://localhost:8000`` in a browser.
+    """
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="http://localhost:3000", status_code=302)
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Liveness probe endpoint."""

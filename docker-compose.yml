@@ -8,8 +8,29 @@ version: "3.9"
 # Required env files:
 #   .env      — PostgreSQL credentials and all application settings.
 #               Copy .env.example to .env and fill in your values.
+#
+# Access points:
+#   http://localhost:3000  — Web configuration UI (tata-frontend)
+#   http://localhost:8000  — FastAPI backend / webhook endpoint (tata-agent)
+#                            Visiting http://localhost:8000 in a browser
+#                            redirects automatically to the frontend.
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-tata_agent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   tata-agent:
     build:
       context: .
@@ -18,6 +39,9 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   tata-frontend:
@@ -31,3 +55,6 @@ services:
     depends_on:
       - tata-agent
     restart: unless-stopped
+
+volumes:
+  pgdata:
