@@ -462,6 +462,11 @@ class _HelpCenterAPI:
             )
             return {}
         payload = data.get("payload", {}) if isinstance(data, dict) else {}
+        # Chatwoot returns payload as a list of articles; normalise to a dict
+        # with an "articles" key so callers (hc_sync.py) can use payload.get("articles").
+        if isinstance(payload, list):
+            meta = data.get("meta", {}) if isinstance(data, dict) else {}
+            return {"articles": payload, "meta": meta}
         if not isinstance(payload, dict):
             logger.warning(
                 "HelpCenterAPI: unexpected articles payload shape for portal '%s': %r",
