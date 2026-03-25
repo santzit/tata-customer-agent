@@ -48,30 +48,29 @@ class SettingsOut(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_OPENAI_KEY = "openai_api_key"
-_LLM_MODEL = "llm_model"
-_LLM_PROVIDER = "llm_provider"
-_OPENAI_ENDPOINT = "openai_api_endpoint"
-_EMBEDDING_MODEL = "embedding_model"
-_EMBEDDING_DIM = "embedding_dimension"
-_DELAY = "response_delay_seconds"
-_WEBHOOK_TOKEN = "webhook_token"
-_LOG_LEVEL = "log_level"
+_OPENAI_KEY = "OPENAI_API_KEY"
+_LLM_MODEL = "OPENAI_MODEL"
+_LLM_PROVIDER = "OPENAI_PROVIDER"
+_OPENAI_ENDPOINT = "OPENAI_API_ENDPOINT"
+_EMBEDDING_MODEL = "EMBEDDING_MODEL"
+_EMBEDDING_DIM = "EMBEDDING_DIMENSION"
+_DELAY = "RESPONSE_DELAY_SECONDS"
+_WEBHOOK_TOKEN = "WEBHOOK_TOKEN"
+_LOG_LEVEL = "LOG_LEVEL"
 
 
 def _merged_settings() -> dict:
-    """Return DB settings merged with env-var defaults."""
-    stored = db_models.get_all_settings()
+    """Return variables merged with env-var defaults."""
     return {
-        _OPENAI_KEY: stored.get(_OPENAI_KEY, settings.openai_api_key),
-        _LLM_MODEL: stored.get(_LLM_MODEL, settings.llm_model),
-        _LLM_PROVIDER: stored.get(_LLM_PROVIDER, settings.llm_provider),
-        _OPENAI_ENDPOINT: stored.get(_OPENAI_ENDPOINT, settings.openai_api_endpoint),
-        _EMBEDDING_MODEL: stored.get(_EMBEDDING_MODEL, settings.embedding_model_small),
-        _EMBEDDING_DIM: stored.get(_EMBEDDING_DIM, settings.embedding_dimension),
-        _DELAY: stored.get(_DELAY, settings.response_delay_seconds),
-        _WEBHOOK_TOKEN: stored.get(_WEBHOOK_TOKEN, settings.webhook_token),
-        _LOG_LEVEL: stored.get(_LOG_LEVEL, settings.log_level),
+        _OPENAI_KEY: db_models.get_variable_value(_OPENAI_KEY, settings.openai_api_key),
+        _LLM_MODEL: db_models.get_variable_value(_LLM_MODEL, settings.llm_model),
+        _LLM_PROVIDER: db_models.get_variable_value(_LLM_PROVIDER, settings.llm_provider),
+        _OPENAI_ENDPOINT: db_models.get_variable_value(_OPENAI_ENDPOINT, settings.openai_api_endpoint),
+        _EMBEDDING_MODEL: db_models.get_variable_value(_EMBEDDING_MODEL, settings.embedding_model_small),
+        _EMBEDDING_DIM: db_models.get_variable_value(_EMBEDDING_DIM, str(settings.embedding_dimension)),
+        _DELAY: db_models.get_variable_value(_DELAY, str(settings.response_delay_seconds)),
+        _WEBHOOK_TOKEN: db_models.get_variable_value(_WEBHOOK_TOKEN, settings.webhook_token),
+        _LOG_LEVEL: db_models.get_variable_value(_LOG_LEVEL, settings.log_level),
     }
 
 
@@ -129,7 +128,7 @@ def update_settings(body: SettingsPayload):
         to_save[_LOG_LEVEL] = body.log_level
 
     if to_save:
-        db_models.set_many_settings(to_save)
+        db_models.set_many_variables(to_save)
 
     merged = _merged_settings()
     return SettingsOut(
@@ -149,14 +148,16 @@ def update_settings(body: SettingsPayload):
 def setup_status():
     """Return whether the first-run setup wizard has been completed.
 
-    The setup is considered complete when at least one active account with an
-    API token exists **and** an OpenAI API key has been saved.
+    Setup is complete when at least one active account exists, a Chatwoot
+    API token is stored in variables, and an OpenAI API key is saved.
     """
     accounts = db_models.list_accounts()
-    has_account = any(a["api_token"] and a["is_active"] for a in accounts)
-    openai_key = db_models.get_setting(_OPENAI_KEY, settings.openai_api_key)
+    has_active_account = any(a["is_active"] for a in accounts)
+    chatwoot_token = db_models.get_variable_value("CHATWOOT_API_TOKEN")
+    openai_key = db_models.get_variable_value(_OPENAI_KEY, settings.openai_api_key)
     return {
-        "setup_complete": has_account and bool(openai_key),
-        "has_account": has_account,
+        "setup_complete": has_active_account and bool(chatwoot_token) and bool(openai_key),
+        "has_account": has_active_account,
+        "has_chatwoot_token": bool(chatwoot_token),
         "openai_configured": bool(openai_key),
     }

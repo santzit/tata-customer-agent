@@ -24,7 +24,7 @@ from app.db_models import (
 from app.hc_sync import HelpCenterSync
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
-from app.routers import accounts, helpcenter, settings as settings_router, conversations as conversations_router
+from app.routers import accounts, helpcenter, settings as settings_router, conversations as conversations_router, variables as variables_router
 
 _log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logging.basicConfig(
@@ -372,6 +372,7 @@ app.include_router(accounts.router)
 app.include_router(settings_router.router)
 app.include_router(helpcenter.router)
 app.include_router(conversations_router.router)
+app.include_router(variables_router.router)
 
 
 # ---------------------------------------------------------------------------

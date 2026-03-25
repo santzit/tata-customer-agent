@@ -1,7 +1,9 @@
 """API routes for managing Chatwoot account connections.
 
-Each account stores its own ``api_token`` so that multiple Chatwoot accounts
-can be configured from the web UI without environment variables.
+Account credentials (base URL, API token) are stored in ``tata_variables``
+under the keys ``CHATWOOT_BASE_URL``, ``CHATWOOT_ACCOUNT_ID``, and
+``CHATWOOT_API_TOKEN``.  The ``tata_accounts`` table only tracks the
+human-readable name, the numeric account ID, and the active/inactive flag.
 """
 
 import logging
@@ -24,28 +26,20 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 class AccountCreate(BaseModel):
     name: str = Field(default="", description="Human-readable label for this connection")
-    chatwoot_base_url: str = Field(..., description="Base URL of the Chatwoot instance")
     chatwoot_account_id: int = Field(..., description="Numeric account ID inside Chatwoot")
-    api_token: str = Field(..., description="Chatwoot API access token for this account")
     is_active: bool = Field(default=True)
 
 
 class AccountUpdate(BaseModel):
     name: str | None = None
-    chatwoot_base_url: str | None = None
     chatwoot_account_id: int | None = None
-    api_token: str | None = Field(default=None, description="Update the API access token")
     is_active: bool | None = None
 
 
 class AccountOut(BaseModel):
     id: int
     name: str
-    chatwoot_base_url: str
     chatwoot_account_id: int
-    api_token_set: bool = Field(
-        description="True when an API token has been saved for this account"
-    )
     is_active: bool
     created_at: str
     updated_at: str
@@ -55,9 +49,7 @@ class AccountOut(BaseModel):
         return cls(
             id=row["id"],
             name=row["name"],
-            chatwoot_base_url=row["chatwoot_base_url"],
             chatwoot_account_id=row["chatwoot_account_id"],
-            api_token_set=bool(row.get("api_token")),
             is_active=row["is_active"],
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
@@ -78,11 +70,9 @@ def list_accounts():
 
 @router.post("", response_model=AccountOut, status_code=status.HTTP_201_CREATED)
 def create_account(body: AccountCreate):
-    """Add a new Chatwoot account connection with its API token."""
+    """Add a new Chatwoot account connection."""
     row = db_models.create_account(
-        chatwoot_base_url=body.chatwoot_base_url,
         chatwoot_account_id=body.chatwoot_account_id,
-        api_token=body.api_token,
         name=body.name,
         is_active=body.is_active,
     )
@@ -100,13 +90,11 @@ def get_account(account_id: int):
 
 @router.patch("/{account_id}", response_model=AccountOut)
 def update_account(account_id: int, body: AccountUpdate):
-    """Update editable fields (including ``api_token``) on an existing account."""
+    """Update editable fields on an existing account."""
     row = db_models.update_account(
         account_id,
         name=body.name,
-        chatwoot_base_url=body.chatwoot_base_url,
         chatwoot_account_id=body.chatwoot_account_id,
-        api_token=body.api_token,
         is_active=body.is_active,
     )
     if row is None:
@@ -124,23 +112,27 @@ def delete_account(account_id: int):
 
 @router.post("/{account_id}/test", response_model=dict)
 def test_account_connection(account_id: int):
-    """Verify the stored API token by calling the Chatwoot accounts endpoint.
+    """Verify the Chatwoot credentials stored in ``tata_variables``.
 
-    Returns ``{"ok": true, "account_name": "..."}`` on success or
+    Reads ``CHATWOOT_BASE_URL`` and ``CHATWOOT_API_TOKEN`` from the variables
+    table and calls the Chatwoot accounts endpoint.  Returns
+    ``{"ok": true, "account_name": "..."}`` on success or
     ``{"ok": false, "error": "..."}`` on failure.
     """
     row = db_models.get_account(account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    base_url = row["chatwoot_base_url"].rstrip("/")
-    token = row["api_token"]
+    base_url = db_models.get_variable_value("CHATWOOT_BASE_URL")
+    token = db_models.get_variable_value("CHATWOOT_API_TOKEN")
     acct_id = row["chatwoot_account_id"]
 
+    if not base_url:
+        return {"ok": False, "error": "CHATWOOT_BASE_URL not configured in Variables"}
     if not token:
-        return {"ok": False, "error": "No API token stored for this account"}
+        return {"ok": False, "error": "CHATWOOT_API_TOKEN not configured in Variables"}
 
-    url = f"{base_url}/api/v1/accounts/{acct_id}"
+    url = f"{base_url.rstrip('/')}/api/v1/accounts/{acct_id}"
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.get(url, headers={"api_access_token": token})
@@ -155,17 +147,28 @@ def test_account_connection(account_id: int):
 
 @router.get("/{account_id}/inboxes", response_model=list[dict])
 def list_account_inboxes(account_id: int):
-    """Return all inboxes for a given account connection."""
+    """Return all inboxes for a given account connection.
+
+    Uses the Chatwoot credentials stored in ``tata_variables``.
+    """
     row = db_models.get_account(account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    base_url = db_models.get_variable_value("CHATWOOT_BASE_URL")
+    token = db_models.get_variable_value("CHATWOOT_API_TOKEN")
+
+    if not base_url or not token:
+        raise HTTPException(
+            status_code=400,
+            detail="CHATWOOT_BASE_URL and CHATWOOT_API_TOKEN must be set in Variables",
+        )
+
     from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
-        base_url=row["chatwoot_base_url"],
-        api_token=row["api_token"],
+        base_url=base_url,
+        api_token=token,
         account_id=row["chatwoot_account_id"],
     )
-    inboxes = client.list_inboxes()
-    return inboxes
+    return client.list_inboxes()

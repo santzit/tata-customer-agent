@@ -59,7 +59,7 @@ export default function DashboardPage() {
           label="Accounts"
           value={String(accounts.filter((a) => a.is_active).length)}
           sub="active connection(s)"
-          ok={accounts.some((a) => a.is_active && a.api_token_set)}
+          ok={accounts.some((a) => a.is_active)}
         />
         <StatusCard
           label="OpenAI"
@@ -104,11 +104,10 @@ export default function DashboardPage() {
                 <div>
                   <div className="font-medium text-sm">{acct.name || `Account #${acct.id}`}</div>
                   <div className="text-xs text-gray-400">
-                    {acct.chatwoot_base_url} · ID {acct.chatwoot_account_id}
+                    Chatwoot ID: {acct.chatwoot_account_id}
                   </div>
                   <div className="mt-0.5 flex gap-2">
                     <Badge ok={acct.is_active} label={acct.is_active ? "Active" : "Inactive"} />
-                    <Badge ok={acct.api_token_set} label={acct.api_token_set ? "Token set" : "No token"} />
                   </div>
                 </div>
                 <button
