@@ -2,12 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  getAccounts,
-  getInboxes,
   getConversations,
   getConversationMessages,
-  Account,
-  Inbox,
   Conversation,
   Message,
 } from '@/lib/api';
@@ -26,10 +22,7 @@ function ConversationRow({
   selected: boolean;
   onClick: () => void;
 }) {
-  // The backend maps Chatwoot's meta.sender into a top-level `contact` field.
-  const name =
-    (conv.contact as { name?: string } | undefined)?.name ??
-    `#${conv.id}`;
+  const name = conv.contact?.name ?? `#${conv.id}`;
 
   return (
     <button
@@ -52,13 +45,18 @@ function ConversationRow({
           {conv.status ?? 'unknown'}
         </span>
       </div>
-      <div className="text-xs text-gray-400">{formatTime(conv.last_activity_at)}</div>
+      {(conv.account_name || conv.inbox_name) && (
+        <div className="text-xs text-gray-500 truncate">
+          {[conv.account_name, conv.inbox_name].filter(Boolean).join(' › ')}
+        </div>
+      )}
+      <div className="text-xs text-gray-400 mt-0.5">{formatTime(conv.last_activity_at)}</div>
     </button>
   );
 }
 
 function MessageBubble({ msg }: { msg: Message }) {
-  // message_type: 0 = incoming, 1 = outgoing (agent), 2 = activity, 3 = bot
+  // message_type: 0=incoming, 1=agent, 2=activity, 3=bot
   const isBot = msg.message_type === 3;
   const isAgent = msg.message_type === 1;
   const isIncoming = msg.message_type === 0;
@@ -72,17 +70,37 @@ function MessageBubble({ msg }: { msg: Message }) {
     : 'bg-gray-50 border border-gray-100 text-gray-500 italic text-xs';
 
   const senderLabel = isBot
-    ? '🤖 Bot'
+    ? '🤖 Tata Bot'
     : isAgent
     ? `🧑‍💼 ${msg.sender?.name ?? 'Agent'}`
     : isIncoming
     ? `👤 ${msg.sender?.name ?? 'Contact'}`
     : 'Activity';
 
+  const statusBadge =
+    msg.status && msg.status !== 'sent'
+      ? (
+          <span
+            className={`ml-2 text-xs px-1.5 py-0.5 rounded font-medium ${
+              msg.status === 'pending'
+                ? 'bg-yellow-100 text-yellow-700'
+                : msg.status === 'failed'
+                ? 'bg-red-100 text-red-600'
+                : ''
+            }`}
+          >
+            {msg.status}
+          </span>
+        )
+      : null;
+
   return (
     <div className={`rounded-xl p-4 ${bgClass}`}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-gray-600">{senderLabel}</span>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
+        <span className="text-xs font-semibold text-gray-600 flex items-center">
+          {senderLabel}
+          {statusBadge}
+        </span>
         <span className="text-xs text-gray-400">{formatTime(msg.created_at)}</span>
       </div>
       <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
@@ -93,10 +111,6 @@ function MessageBubble({ msg }: { msg: Message }) {
 }
 
 export default function ConversationsPage() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [inboxes, setInboxes] = useState<Inbox[]>([]);
-  const [selectedAccount, setSelectedAccount] = useState<number | ''>('');
-  const [selectedInbox, setSelectedInbox] = useState<number | ''>('');
   const [limit, setLimit] = useState(50);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
@@ -105,42 +119,20 @@ export default function ConversationsPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    getAccounts()
-      .then(setAccounts)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (selectedAccount === '') {
-      setInboxes([]);
-      setSelectedInbox('');
-      return;
-    }
-    getInboxes(Number(selectedAccount))
-      .then(setInboxes)
-      .catch(() => setInboxes([]));
-    setSelectedInbox('');
-  }, [selectedAccount]);
-
   const loadConversations = useCallback(async () => {
     setLoadingConvs(true);
     setError('');
     setSelectedConv(null);
     setMessages([]);
     try {
-      const data = await getConversations(
-        limit,
-        selectedAccount !== '' ? Number(selectedAccount) : undefined,
-        selectedInbox !== '' ? Number(selectedInbox) : undefined
-      );
+      const data = await getConversations(limit);
       setConversations(data);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoadingConvs(false);
     }
-  }, [limit, selectedAccount, selectedInbox]);
+  }, [limit]);
 
   useEffect(() => {
     loadConversations();
@@ -151,10 +143,7 @@ export default function ConversationsPage() {
     setLoadingMsgs(true);
     setMessages([]);
     try {
-      const data = await getConversationMessages(
-        conv.id,
-        selectedAccount !== '' ? Number(selectedAccount) : undefined
-      );
+      const data = await getConversationMessages(conv.id);
       setMessages(data);
     } catch {
       setMessages([]);
@@ -167,46 +156,13 @@ export default function ConversationsPage() {
     <div className="flex flex-col h-full">
       <div className="mb-5">
         <h1 className="text-2xl font-bold text-gray-900">Conversations</h1>
-        <p className="text-gray-500 mt-1">Browse and inspect support conversations.</p>
+        <p className="text-gray-500 mt-1">
+          Browse conversations and bot messages stored in the local database.
+        </p>
       </div>
 
-      {/* Filters */}
+      {/* Toolbar */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-4 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Account</label>
-          <select
-            value={selectedAccount}
-            onChange={(e) =>
-              setSelectedAccount(e.target.value === '' ? '' : Number(e.target.value))
-            }
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All accounts</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Inbox</label>
-          <select
-            value={selectedInbox}
-            onChange={(e) =>
-              setSelectedInbox(e.target.value === '' ? '' : Number(e.target.value))
-            }
-            disabled={selectedAccount === ''}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
-          >
-            <option value="">All inboxes</option>
-            {inboxes.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name}
-              </option>
-            ))}
-          </select>
-        </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Limit</label>
           <select
@@ -219,6 +175,16 @@ export default function ConversationsPage() {
             <option value={100}>100</option>
           </select>
         </div>
+        <button
+          onClick={loadConversations}
+          disabled={loadingConvs}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          {loadingConvs ? 'Loading…' : '↻ Refresh'}
+        </button>
+        <span className="text-xs text-gray-400 self-center">
+          Source: local database
+        </span>
       </div>
 
       {error && (
@@ -238,7 +204,10 @@ export default function ConversationsPage() {
           ) : conversations.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 py-8">
               <p className="text-3xl mb-2">💬</p>
-              <p className="text-sm">No conversations found.</p>
+              <p className="text-sm">No conversations found in local DB.</p>
+              <p className="text-xs mt-1 text-gray-300">
+                Conversations are created when the webhook fires.
+              </p>
             </div>
           ) : (
             conversations.map((conv) => (
@@ -258,7 +227,7 @@ export default function ConversationsPage() {
             <div className="flex flex-col items-center justify-center h-full text-gray-400 py-16">
               <p className="text-4xl mb-3">👈</p>
               <p className="font-medium">Select a conversation</p>
-              <p className="text-sm mt-1">to view its messages</p>
+              <p className="text-sm mt-1">to view its bot messages</p>
             </div>
           ) : loadingMsgs ? (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm py-8">
@@ -266,14 +235,28 @@ export default function ConversationsPage() {
             </div>
           ) : (
             <div className="p-5 space-y-3">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-800">
-                  Conversation #{selectedConv.id}
-                </h2>
-                <span className="text-xs text-gray-400">{messages.length} message(s)</span>
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <div>
+                  <h2 className="font-semibold text-gray-800">
+                    Conversation #{selectedConv.id}
+                  </h2>
+                  {(selectedConv.account_name || selectedConv.inbox_name) && (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {[selectedConv.account_name, selectedConv.inbox_name]
+                        .filter(Boolean)
+                        .join(' › ')}
+                    </p>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400">{messages.length} bot message(s)</span>
               </div>
               {messages.length === 0 ? (
-                <div className="text-center text-gray-400 py-8">No messages.</div>
+                <div className="text-center text-gray-400 py-8">
+                  <p>No bot messages stored for this conversation.</p>
+                  <p className="text-xs mt-1 text-gray-300">
+                    Only outgoing messages sent by Tata Bot are tracked in the local DB.
+                  </p>
+                </div>
               ) : (
                 messages.map((msg) => <MessageBubble key={msg.id} msg={msg} />)
               )}

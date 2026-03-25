@@ -50,20 +50,27 @@ export interface Article {
 
 export interface Conversation {
   id: number;
-  /** Backend maps Chatwoot meta.sender into this top-level contact field */
+  display_id?: number;
+  /** Contact info extracted from the conversation meta */
   contact?: { id?: number; name?: string; email?: string };
   last_activity_at?: number;
   status?: string;
-  inbox_id?: number;
+  /** Account name from local DB join */
+  account_name?: string;
+  /** Inbox name from local DB join */
+  inbox_name?: string;
   [key: string]: unknown;
 }
 
 export interface Message {
   id: number;
   content?: string;
+  /** 0=incoming, 1=agent, 2=activity, 3=bot */
   message_type?: number;
   sender?: { name?: string; type?: string };
   created_at?: number;
+  /** Only present for local DB messages */
+  status?: string;
   [key: string]: unknown;
 }
 
@@ -144,8 +151,6 @@ export function getConversations(
 
 export function getConversationMessages(
   conversationId: number,
-  accountId?: number
 ): Promise<Message[]> {
-  const q = accountId != null ? `?account_id=${accountId}` : "";
-  return request<Message[]>(`/web/conversations/${conversationId}/messages${q}`);
+  return request<Message[]>(`/web/conversations/${conversationId}/messages`);
 }

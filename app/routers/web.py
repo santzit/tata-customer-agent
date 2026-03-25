@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlmodel import Session, create_engine, select
 
 from app.config import settings
@@ -314,46 +315,63 @@ def get_conversations(
     account_id: Optional[int] = Query(default=None),
     inbox_id: Optional[int] = Query(default=None),
 ):
-    """Fetch conversations from Chatwoot with optional account/inbox filters."""
-    aid = _account_id_or_default(account_id)
-    if not aid:
-        return []
+    """Fetch conversations from the local database (ordered by most recent activity)."""
+    try:
+        params: dict = {
+            "limit": limit,
+            "account_id": account_id,
+            "inbox_id": inbox_id,
+        }
 
-    client = _web_client()
-    payload = client.conversations.list_conversations(
-        account_id=aid, inbox_id=inbox_id
-    )
+        with _engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT
+                        c.chatwoot_id   AS id,
+                        c.display_id,
+                        c.status,
+                        c.meta,
+                        c.updated_at,
+                        c.account_id,
+                        c.inbox_id,
+                        a.name          AS account_name,
+                        i.name          AS inbox_name
+                    FROM conversations c
+                    LEFT JOIN accounts a ON c.account_id = a.id
+                    LEFT JOIN inboxes  i ON c.inbox_id  = i.id
+                    WHERE (:account_id IS NULL OR c.account_id = :account_id)
+                      AND (:inbox_id   IS NULL OR c.inbox_id   = :inbox_id)
+                    ORDER BY c.updated_at DESC
+                    LIMIT :limit
+                """),
+                params,
+            ).mappings().all()
 
-    # Chatwoot wraps conversations under data.payload
-    conversations = payload.get("payload", []) if isinstance(payload, dict) else []
-    if not isinstance(conversations, list):
-        conversations = []
-
-    result = []
-    for conv in conversations[:limit]:
-        meta = conv.get("meta", {}) or {}
-        contact = meta.get("sender", {}) or {}
-        result.append(
-            {
-                "id": conv.get("id"),
-                "display_id": conv.get("display_id"),
-                "status": conv.get("status"),
-                "contact": {
-                    "id": contact.get("id"),
-                    "name": contact.get("name"),
-                    "email": contact.get("email"),
-                },
-                "inbox_id": conv.get("inbox_id"),
-                "account_id": conv.get("account_id"),
-                "last_activity_at": conv.get("last_activity_at"),
-                "last_message": (
-                    conv.get("last_non_activity_message", {}).get("content")
-                    if conv.get("last_non_activity_message")
-                    else None
-                ),
-            }
-        )
-    return result
+        result = []
+        for row in rows:
+            meta = row["meta"] or {}
+            contact = meta.get("sender", {}) or {}
+            result.append(
+                {
+                    "id": row["id"],
+                    "display_id": row["display_id"],
+                    "status": row["status"],
+                    "contact": {
+                        "id": contact.get("id"),
+                        "name": contact.get("name"),
+                        "email": contact.get("email"),
+                    },
+                    "account_name": row["account_name"],
+                    "inbox_name": row["inbox_name"],
+                    "last_activity_at": (
+                        int(row["updated_at"].timestamp()) if row["updated_at"] else None
+                    ),
+                }
+            )
+        return result
+    except Exception as exc:
+        logger.warning("conversations: local DB query failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -361,29 +379,46 @@ def get_conversation_messages(
     conversation_id: int,
     account_id: Optional[int] = Query(default=None),
 ):
-    """Fetch messages for a conversation from Chatwoot."""
-    aid = _account_id_or_default(account_id)
-    if not aid:
-        raise HTTPException(status_code=400, detail="account_id is required")
+    """Fetch bot messages for a conversation from the local database."""
+    try:
+        with _engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT
+                        id,
+                        content,
+                        message_type,
+                        private,
+                        status,
+                        created_at
+                    FROM messages
+                    WHERE chatwoot_conv_id = :conv_id
+                    ORDER BY created_at ASC
+                    LIMIT 500
+                """),
+                {"conv_id": conversation_id},
+            ).mappings().all()
 
-    client = _web_client()
-    messages = client.conversations.get_messages(conversation_id, account_id=aid)
-
-    return [
-        {
-            "id": msg.get("id"),
-            "content": msg.get("content"),
-            "message_type": msg.get("message_type"),
-            "sender": {
-                "id": msg.get("sender", {}).get("id") if msg.get("sender") else None,
-                "name": msg.get("sender", {}).get("name") if msg.get("sender") else None,
-                "type": msg.get("sender", {}).get("type") if msg.get("sender") else None,
-            },
-            "created_at": msg.get("created_at"),
-            "private": msg.get("private", False),
-        }
-        for msg in messages
-    ]
+        # Our messages table stores bot-sent outgoing messages.
+        # message_type in DB is text ('outgoing'); map to integer 3 (bot)
+        # so the frontend MessageBubble can colour them correctly.
+        return [
+            {
+                "id": row["id"],
+                "content": row["content"],
+                "message_type": 3,  # bot outgoing
+                "sender": {"name": "Tata Bot", "type": "bot"},
+                "created_at": (
+                    int(row["created_at"].timestamp()) if row["created_at"] else None
+                ),
+                "private": row["private"],
+                "status": row["status"],
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.warning("conversation messages: local DB query failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

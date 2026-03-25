@@ -446,76 +446,79 @@ class TestHelpCenter:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /web/conversations
+# ---------------------------------------------------------------------------
+
+def _mock_engine(rows=None, messages_rows=None):
+    """Return a mock SQLAlchemy engine that yields pre-set rows."""
+    from unittest.mock import MagicMock
+    mock_engine = MagicMock()
+    conn = MagicMock()
+
+    # Track calls so we can return different rows for conversations vs messages
+    call_count = [0]
+    datasets = []
+    if rows is not None:
+        datasets.append(rows)
+    if messages_rows is not None:
+        datasets.append(messages_rows)
+
+    def _execute(query, params=None):
+        idx = call_count[0]
+        call_count[0] += 1
+        result = MagicMock()
+        dataset = datasets[idx] if idx < len(datasets) else []
+        result.mappings.return_value.all.return_value = dataset
+        return result
+
+    conn.execute.side_effect = _execute
+    mock_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    return mock_engine
+
+
 class TestConversations:
-    def test_returns_empty_without_account(self):
-        """GET /web/conversations returns [] when no account_id is resolvable."""
-        from app.main import app
-        with TestClient(app) as client:
-            with patch("app.routers.web._account_id_or_default", return_value=None):
+    def test_returns_empty_list_when_db_empty(self):
+        """GET /web/conversations returns [] when DB has no conversations."""
+        mock_eng = _mock_engine(rows=[])
+        with patch("app.routers.web._engine", mock_eng):
+            from app.main import app
+            with TestClient(app) as client:
                 resp = client.get("/web/conversations")
 
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_returns_conversations_list(self):
-        """GET /web/conversations?account_id=1 delegates to conversations.list_conversations()."""
-        conversations = [
-            {
-                "id": 101,
-                "display_id": 1,
-                "status": "open",
-                "inbox_id": 5,
-                "account_id": 1,
-                "last_activity_at": 1700000000,
-                "meta": {"sender": {"id": 10, "name": "Alice", "email": "alice@example.com"}},
-                "last_non_activity_message": {"content": "Hello!"},
-            }
-        ]
-        mock_client = _mock_web_client(
-            conversations_data={"payload": conversations}
-        )
+    def test_returns_conversations_from_db(self):
+        """GET /web/conversations returns rows from local DB."""
+        import datetime
 
-        with patch("app.routers.web._web_client", return_value=mock_client):
+        row = {
+            "id": 101,
+            "display_id": 1,
+            "status": "open",
+            "meta": {"sender": {"id": 10, "name": "Alice", "email": "alice@example.com"}},
+            "updated_at": datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+            "account_id": 1,
+            "inbox_id": 5,
+            "account_name": "Acme Corp",
+            "inbox_name": "Website Chat",
+        }
+
+        mock_eng = _mock_engine(rows=[row])
+        with patch("app.routers.web._engine", mock_eng):
             from app.main import app
             with TestClient(app) as client:
-                resp = client.get("/web/conversations?account_id=1&limit=10")
+                resp = client.get("/web/conversations?limit=10")
 
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
         assert data[0]["id"] == 101
         assert data[0]["contact"]["name"] == "Alice"
-        mock_client.conversations.list_conversations.assert_called_once_with(
-            account_id=1, inbox_id=None
-        )
-
-    def test_inbox_filter_is_forwarded(self):
-        """GET /web/conversations?account_id=1&inbox_id=5 passes inbox_id to the sub-API."""
-        mock_client = _mock_web_client(conversations_data={"payload": []})
-
-        with patch("app.routers.web._web_client", return_value=mock_client):
-            from app.main import app
-            with TestClient(app) as client:
-                client.get("/web/conversations?account_id=1&inbox_id=5")
-
-        mock_client.conversations.list_conversations.assert_called_once_with(
-            account_id=1, inbox_id=5
-        )
-
-    def test_limit_respected(self):
-        """GET /web/conversations?limit=2 returns at most 2 conversations."""
-        conversations = [
-            {"id": i, "status": "open", "meta": {"sender": {}}} for i in range(1, 6)
-        ]
-        mock_client = _mock_web_client(conversations_data={"payload": conversations})
-
-        with patch("app.routers.web._web_client", return_value=mock_client):
-            from app.main import app
-            with TestClient(app) as client:
-                resp = client.get("/web/conversations?account_id=1&limit=2")
-
-        assert resp.status_code == 200
-        assert len(resp.json()) <= 2
+        assert data[0]["account_name"] == "Acme Corp"
+        assert data[0]["inbox_name"] == "Website Chat"
 
 
 # ---------------------------------------------------------------------------
@@ -524,51 +527,39 @@ class TestConversations:
 
 
 class TestConversationMessages:
-    def test_requires_account_id(self):
-        """GET /web/conversations/1/messages without account_id returns 400."""
-        from app.main import app
-        with TestClient(app) as client:
-            with patch("app.routers.web._account_id_or_default", return_value=None):
-                resp = client.get("/web/conversations/1/messages")
+    def test_returns_messages_from_db(self):
+        """GET /web/conversations/42/messages returns rows from local messages table."""
+        import datetime
 
-        assert resp.status_code == 400
+        row = {
+            "id": 1001,
+            "content": "Hi there!",
+            "message_type": "outgoing",
+            "private": False,
+            "status": "sent",
+            "created_at": datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        }
 
-    def test_returns_messages_list(self):
-        """GET /web/conversations/1/messages?account_id=1 delegates to conversations.get_messages()."""
-        messages = [
-            {
-                "id": 1001,
-                "content": "Hi there!",
-                "message_type": 0,
-                "created_at": 1700000000,
-                "sender": {"id": 10, "name": "Alice", "type": "contact"},
-                "private": False,
-            }
-        ]
-        mock_client = _mock_web_client(messages_list=messages)
-
-        with patch("app.routers.web._web_client", return_value=mock_client):
+        mock_eng = _mock_engine(messages_rows=[row])
+        with patch("app.routers.web._engine", mock_eng):
             from app.main import app
             with TestClient(app) as client:
-                resp = client.get("/web/conversations/1/messages?account_id=1")
+                resp = client.get("/web/conversations/42/messages")
 
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
         assert data[0]["content"] == "Hi there!"
-        assert data[0]["sender"]["name"] == "Alice"
-        mock_client.conversations.get_messages.assert_called_once_with(
-            1, account_id=1
-        )
+        assert data[0]["message_type"] == 3  # mapped to bot type
+        assert data[0]["sender"]["name"] == "Tata Bot"
 
-    def test_returns_empty_list_when_chatwoot_fails(self):
-        """GET messages returns an empty list (not 502) when Chatwoot returns []."""
-        mock_client = _mock_web_client(messages_list=[])
-
-        with patch("app.routers.web._web_client", return_value=mock_client):
+    def test_returns_empty_list_when_no_messages(self):
+        """GET /web/conversations/99/messages returns [] when no messages in DB."""
+        mock_eng = _mock_engine(messages_rows=[])
+        with patch("app.routers.web._engine", mock_eng):
             from app.main import app
             with TestClient(app) as client:
-                resp = client.get("/web/conversations/1/messages?account_id=1")
+                resp = client.get("/web/conversations/99/messages")
 
         assert resp.status_code == 200
         assert resp.json() == []
