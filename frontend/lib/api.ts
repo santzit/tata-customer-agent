@@ -109,6 +109,10 @@ export function syncHelpCenter(accountId?: number, portalSlug?: string): Promise
   });
 }
 
+export function getTokenApis(): Promise<Record<string, string>> {
+  return request<Record<string, string>>("/web/config/token-api");
+}
+
 export function saveTokenApi(accountId: number, tokenApi: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>("/web/config/token-api", {
     method: "POST",

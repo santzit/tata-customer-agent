@@ -213,6 +213,17 @@ def sync_help_center(body: SyncHelpCenterBody):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/config/token-api")
+def get_token_apis():
+    """Return all locally stored token_api values keyed by account_id."""
+    try:
+        with Session(_engine) as session:
+            accounts = session.exec(select(ChatwootAccount)).all()
+        return {str(a.account_id): a.token_api for a in accounts}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/config/token-api")
 def save_token_api(body: TokenApiBody):
     """Save or update the TOKEN_API for a Chatwoot account."""

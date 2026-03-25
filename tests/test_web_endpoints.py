@@ -244,6 +244,20 @@ class TestChatwootTeams:
 
 
 class TestTokenApi:
+    def test_get_token_apis_returns_mapping(self):
+        """GET /web/config/token-api returns a dict of account_id → token_api."""
+        from app.web_models import ChatwootAccount
+        acct = ChatwootAccount(id=1, account_id=7, name="Acme", token_api="my-token")
+        mock_session = _mock_db_session(all_return=[acct])
+
+        with patch("app.routers.web.Session", return_value=mock_session):
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/web/config/token-api")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"7": "my-token"}
+
     def test_save_token_api_new(self):
         """POST /web/config/token-api inserts a new account record."""
         mock_session = _mock_db_session(first_return=None)

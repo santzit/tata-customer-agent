@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const navItems = [
-  { href: '/setup', label: 'Setup', icon: '⚙️' },
+  { href: '/accounts', label: 'Accounts', icon: '🏢' },
   { href: '/help-center', label: 'Help Center', icon: '📚' },
   { href: '/conversations', label: 'Conversations', icon: '💬' },
   { href: '/openai', label: 'OpenAI Config', icon: '🤖' },
+  { href: '/setup', label: 'Getting Started', icon: '⚙️' },
 ];
 
 export default function Navbar() {
