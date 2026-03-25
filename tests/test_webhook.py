@@ -408,7 +408,7 @@ def test_chatwoot_client_sends_post_request():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     conversation_id = 77
@@ -440,7 +440,7 @@ def test_chatwoot_client_raises_on_error():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url="http://chatwoot.test",
@@ -461,7 +461,7 @@ def test_chatwoot_client_handover_posts_to_toggle_status():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     conversation_id = 77
@@ -488,3 +488,201 @@ def test_chatwoot_client_handover_posts_to_toggle_status():
     assert sent_request.headers["api_access_token"] == "token-abc"
     body = json.loads(sent_request.content)
     assert body == {"status": "open"}
+
+
+# ---------------------------------------------------------------------------
+# ChatwootClient -- Help Center read methods
+# ---------------------------------------------------------------------------
+
+
+def test_chatwoot_client_list_portals_returns_portal_list():
+    """ChatwootClient.list_portals() should GET /portals and unwrap the payload list."""
+    import httpx
+    import respx
+
+    from app.services.chatwoot_client import ChatwootClient
+
+    account_id = 5
+    client = ChatwootClient(
+        base_url="http://chatwoot.test",
+        api_token="token-abc",
+        account_id=account_id,
+    )
+    expected_url = f"http://chatwoot.test/api/v1/accounts/{account_id}/portals"
+    portals_data = [{"id": 1, "slug": "main-portal", "name": "Main Portal"}]
+
+    with respx.mock:
+        mock_route = respx.get(expected_url).mock(
+            return_value=httpx.Response(200, json={"payload": portals_data})
+        )
+        result = client.list_portals()
+
+    assert mock_route.called
+    assert result == portals_data
+    sent_request = mock_route.calls.last.request
+    assert sent_request.headers["api_access_token"] == "token-abc"
+
+
+def test_chatwoot_client_list_portals_returns_empty_on_error():
+    """ChatwootClient.list_portals() should return [] on HTTP errors."""
+    import httpx
+    import respx
+
+    from app.services.chatwoot_client import ChatwootClient
+
+    client = ChatwootClient(
+        base_url="http://chatwoot.test",
+        api_token="bad-token",
+        account_id=1,
+    )
+
+    with respx.mock:
+        respx.get("http://chatwoot.test/api/v1/accounts/1/portals").mock(
+            return_value=httpx.Response(401, json={"error": "unauthorized"})
+        )
+        result = client.list_portals()
+
+    assert result == []
+
+
+def test_chatwoot_client_list_portal_articles_returns_payload():
+    """ChatwootClient.list_portal_articles() should GET articles and return the payload dict."""
+    import httpx
+    import respx
+
+    from app.services.chatwoot_client import ChatwootClient
+
+    account_id = 5
+    portal_slug = "main-portal"
+    client = ChatwootClient(
+        base_url="http://chatwoot.test",
+        api_token="token-abc",
+        account_id=account_id,
+    )
+    expected_url = (
+        f"http://chatwoot.test/api/v1/accounts/{account_id}/portals/{portal_slug}/articles"
+    )
+    articles_payload = {
+        "articles": [
+            {"id": 101, "title": "Getting Started", "content": "Welcome!"},
+            {"id": 102, "title": "Pricing", "content": "Plans start at R$150."},
+        ],
+        "meta": {"total": 2},
+    }
+
+    with respx.mock:
+        mock_route = respx.get(expected_url).mock(
+            return_value=httpx.Response(200, json={"payload": articles_payload})
+        )
+        result = client.list_portal_articles(portal_slug, status="published", page=1)
+
+    assert mock_route.called
+    assert result == articles_payload
+    sent_request = mock_route.calls.last.request
+    assert sent_request.headers["api_access_token"] == "token-abc"
+
+
+def test_chatwoot_client_list_portal_articles_returns_empty_on_error():
+    """ChatwootClient.list_portal_articles() should return {} on HTTP errors."""
+    import httpx
+    import respx
+
+    from app.services.chatwoot_client import ChatwootClient
+
+    client = ChatwootClient(
+        base_url="http://chatwoot.test",
+        api_token="bad-token",
+        account_id=1,
+    )
+
+    with respx.mock:
+        respx.get("http://chatwoot.test/api/v1/accounts/1/portals/no-portal/articles").mock(
+            return_value=httpx.Response(404, json={"error": "not found"})
+        )
+        result = client.list_portal_articles("no-portal")
+
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# HelpCenterSync unit tests (mock ChatwootClient + mock vector store)
+# ---------------------------------------------------------------------------
+
+
+def test_hc_sync_upserts_articles_from_mocked_chatwoot_api():
+    """HelpCenterSync.run() should fetch portals/articles via ChatwootClient and index them."""
+    from unittest.mock import MagicMock, call
+
+    from app.hc_sync import HelpCenterSync
+
+    mock_store = MagicMock()
+    mock_client = MagicMock()
+    mock_client.api_token = "test-token"
+    mock_client.list_portals.return_value = [
+        {"id": 1, "slug": "test-portal", "name": "Test Portal"}
+    ]
+    mock_client.list_portal_articles.return_value = {
+        "articles": [
+            {"id": 101, "title": "Getting Started", "content": "Welcome to our gym."},
+            {"id": 102, "title": "Pricing Plans", "content": "Plans start at R$150/month."},
+        ],
+        "meta": {"total": 2},
+    }
+
+    sync = HelpCenterSync(mock_store, chatwoot_client=mock_client)
+    count = sync.run()
+
+    assert count == 2
+    mock_client.list_portals.assert_called_once()
+    mock_client.list_portal_articles.assert_called_once_with(
+        "test-portal", status="published", page=1
+    )
+    assert mock_store.upsert.call_count == 2
+    upserted_ids = [c.kwargs["doc_id"] for c in mock_store.upsert.call_args_list]
+    assert "hc-article-101" in upserted_ids
+    assert "hc-article-102" in upserted_ids
+
+
+def test_hc_sync_skips_when_no_api_token():
+    """HelpCenterSync.run() should return 0 and skip sync when api_token is empty."""
+    from unittest.mock import MagicMock
+
+    from app.hc_sync import HelpCenterSync
+
+    mock_store = MagicMock()
+    mock_client = MagicMock()
+    mock_client.api_token = ""  # empty — no token configured
+
+    sync = HelpCenterSync(mock_store, chatwoot_client=mock_client)
+    count = sync.run()
+
+    assert count == 0
+    mock_client.list_portals.assert_not_called()
+    mock_store.upsert.assert_not_called()
+
+
+def test_hc_sync_skips_articles_without_id_or_title():
+    """HelpCenterSync.run() should skip malformed articles missing id or title."""
+    from unittest.mock import MagicMock
+
+    from app.hc_sync import HelpCenterSync
+
+    mock_store = MagicMock()
+    mock_client = MagicMock()
+    mock_client.api_token = "test-token"
+    mock_client.list_portals.return_value = [{"id": 1, "slug": "p", "name": "P"}]
+    mock_client.list_portal_articles.return_value = {
+        "articles": [
+            {"id": None, "title": "No ID article", "content": "x"},   # missing id → skip
+            {"id": 200, "title": "", "content": "no title"},           # empty title → skip
+            {"id": 201, "title": "Valid Article", "content": "content"},  # valid → indexed
+        ],
+        "meta": {"total": 3},
+    }
+
+    sync = HelpCenterSync(mock_store, chatwoot_client=mock_client)
+    count = sync.run()
+
+    assert count == 1
+    assert mock_store.upsert.call_count == 1
+    assert mock_store.upsert.call_args.kwargs["doc_id"] == "hc-article-201"

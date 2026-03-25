@@ -160,7 +160,7 @@ def list_account_inboxes(account_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url=row["chatwoot_base_url"],

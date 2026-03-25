@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     embedding_dimension: int = 1536  # vector column size; change to 3072 when using the large model
 
     # PostgreSQL / pgvector
-    # Use the same Postgres that Chatwoot already runs.
-    # Example: postgresql://user:password@localhost:5432/chatwoot
+    # postgres_user / postgres_password — superuser credentials used **only** at
+    # boot time to create the tata_agent database.  These match the standard Docker
+    # POSTGRES_USER / POSTGRES_PASSWORD env vars used by the postgres container.
+    # Leave both blank to skip the automatic database-creation step.
+    postgres_user: str = "postgres"
+    postgres_password: str = "postgres"
     postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/tata_agent"
     pg_vector_table: str = "tata_knowledge"
     pg_memory_table: str = "tata_conversations"

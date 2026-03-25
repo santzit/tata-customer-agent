@@ -118,7 +118,7 @@ def _sync_account(account_row: dict, vector_store) -> int:
 
     Returns the number of articles upserted.
     """
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url=account_row["chatwoot_base_url"],

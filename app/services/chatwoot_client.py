@@ -1,4 +1,4 @@
-"""Chatwoot API client for sending reply messages."""
+"""Chatwoot API client for sending reply messages and reading Help Center content."""
 
 import logging
 
@@ -139,10 +139,11 @@ class ChatwootClient:
             )
             return {}
 
+        # Chatwoot returns {"payload": {"articles": [...], "meta": {...}}}
         payload = data.get("payload", {}) if isinstance(data, dict) else {}
         if not isinstance(payload, dict):
             logger.warning(
-                "ChatwootClient: unexpected articles payload for portal '%s': %r",
+                "ChatwootClient: unexpected articles payload shape for portal '%s': %r",
                 portal_slug,
                 type(payload),
             )
@@ -171,6 +172,7 @@ class ChatwootClient:
         if not isinstance(inboxes, list):
             return []
         return inboxes
+
 
     def handover_to_human(self, conversation_id: int) -> dict:
         """Hand over a conversation from the bot to a human agent.
