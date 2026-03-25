@@ -312,22 +312,29 @@ class _AccountsAPI:
         self._c = client
 
     def list(self) -> list[dict]:
-        """Return all Chatwoot accounts.
+        """Return all Chatwoot accounts visible to the authenticated user.
 
-        Requires a super-admin token (``CHATWOOT_MASTER_TOKEN``).
+        Uses ``GET /api/v1/profile`` (works with any user token, including
+        the master token) which returns the user's profile with an ``accounts``
+        array listing every account they are a member of.
 
         Returns:
             List of account dicts.  Returns an empty list on any error.
         """
         try:
-            data = self._c._get("/api/v1/accounts")
+            data = self._c._get("/api/v1/profile")
         except Exception as exc:
             logger.warning("AccountsAPI: failed to list accounts: %s", exc)
             return []
-        if isinstance(data, list):
-            return data
-        # Chatwoot wraps under "data" for paginated responses
-        return data.get("data", []) if isinstance(data, dict) else []
+        if not isinstance(data, dict):
+            return []
+        accounts = data.get("accounts", [])
+        # Normalise: ensure each entry has 'id' and 'name' at the top level.
+        result = []
+        for entry in accounts:
+            if isinstance(entry, dict) and "id" in entry:
+                result.append(entry)
+        return result
 
 
 # ---------------------------------------------------------------------------
