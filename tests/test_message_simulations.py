@@ -113,11 +113,31 @@ def live_infrastructure(require_pg, pg_dsn, pg_test_vector_table, pg_test_memory
     from app.message_buffer import MessageBuffer
     from app.pg_vector_store import PgVectorStore
 
+    from app.hc_sync import HelpCenterSync
+
     openai_client = settings.make_openai_client()
     store = PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table, openai_client=openai_client)
     store.ensure_table()
-    for section_id, text in _iter_doc_sections():
-        store.upsert(section_id, text, {"source": "company_context"})
+
+    # Build mock HC articles from the company context document sections, then
+    # populate the vector store via HelpCenterSync (same code path as production)
+    # so tests validate the full HC API sync pipeline instead of direct DB inserts.
+    mock_articles = []
+    for article_index, (_section_id, full_text) in enumerate(_iter_doc_sections()):
+        title, _, content = full_text.partition("\n\n")
+        mock_articles.append(
+            {"id": article_index + 1, "title": title, "content": content, "status": "published"}
+        )
+
+    mock_portal = {"id": 1, "slug": "test-portal", "name": "Test Portal"}
+    mock_hc_client = MagicMock()
+    mock_hc_client.api_token = "test-token"  # non-empty so HelpCenterSync proceeds
+    mock_hc_client.list_portals.return_value = [mock_portal]
+    mock_hc_client.list_portal_articles.return_value = {
+        "articles": mock_articles,
+        "meta": {"total": len(mock_articles)},
+    }
+    HelpCenterSync(store, chatwoot_client=mock_hc_client).run()
 
     memory = ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table)
     memory.ensure_table()

@@ -2,14 +2,25 @@
 
 import hmac
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from app.agent import run_agent
-from app.chatwoot import ChatwootClient
+from app.services.chatwoot_client import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
+from app.db_bootstrap import ensure_database
+from app.db_models import (
+    create_pending_message,
+    ensure_schema,
+    fetch_messages_due_for_retry,
+    mark_message_failed,
+    mark_message_sent,
+    reset_message_to_pending,
+)
+from app.hc_sync import HelpCenterSync
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
@@ -33,6 +44,152 @@ _vector_store: PgVectorStore | None = None
 _conversation_memory: ConversationMemory | None = None
 _chatwoot_client: ChatwootClient | None = None
 _message_buffer: MessageBuffer | None = None
+
+# ---------------------------------------------------------------------------
+# Message retry worker
+# ---------------------------------------------------------------------------
+
+#: How often the retry worker checks for overdue messages (seconds).
+_RETRY_POLL_INTERVAL_SEC = 60
+
+
+def _send_message_with_tracking(
+    conversation_id: int,
+    content: str,
+    *,
+    message_type: str = "outgoing",
+    private: bool = False,
+) -> None:
+    """Persist and send a single outgoing message, updating send status.
+
+    Creates a ``pending`` record before attempting the send, then marks it
+    ``sent`` on success or ``failed`` (with retry scheduling) on error.
+
+    Args:
+        conversation_id: Chatwoot conversation id.
+        content: Message text.
+        message_type: ``"outgoing"`` for customer-visible replies.
+        private: When ``True`` the message is a private note.
+    """
+    message_id: int | None = None
+    try:
+        message_id = create_pending_message(
+            conversation_id,
+            content,
+            message_type=message_type,
+            private=private,
+        )
+    except Exception as db_exc:
+        logger.warning(
+            "Could not persist outgoing message to DB (conv %d): %s",
+            conversation_id,
+            db_exc,
+        )
+
+    try:
+        result = _chatwoot_client.send_message(
+            conversation_id=conversation_id,
+            message=content,
+            message_type=message_type,
+            private=private,
+        )
+        if message_id is not None:
+            try:
+                cw_msg_id = result.get("id")
+                if cw_msg_id is None:
+                    logger.warning(
+                        "Chatwoot API response missing 'id' for conv %d; "
+                        "marking sent without chatwoot_message_id",
+                        conversation_id,
+                    )
+                mark_message_sent(message_id, cw_msg_id or 0)
+            except Exception as db_exc:
+                logger.warning("Could not mark message %d as sent: %s", message_id, db_exc)
+    except Exception as send_exc:
+        logger.exception(
+            "Failed to send message to Chatwoot (conv %d): %s", conversation_id, send_exc
+        )
+        if message_id is not None:
+            try:
+                mark_message_failed(message_id, str(send_exc))
+            except Exception as db_exc:
+                logger.warning(
+                    "Could not mark message %d as failed: %s", message_id, db_exc
+                )
+        raise
+
+
+def _retry_failed_messages() -> None:
+    """Fetch overdue failed messages and attempt to re-send them."""
+    try:
+        rows = fetch_messages_due_for_retry()
+    except Exception as exc:
+        logger.warning("Retry worker: failed to fetch messages due for retry: %s", exc)
+        return
+
+    for row in rows:
+        msg_id = row["id"]
+        conv_id = row["chatwoot_conv_id"]
+        content = row["content"]
+        logger.info(
+            "Retry worker: retrying message id=%d (conv=%d, attempt=%d)",
+            msg_id,
+            conv_id,
+            row["send_attempts"] + 1,
+        )
+        try:
+            reset_message_to_pending(msg_id)
+            result = _chatwoot_client.send_message(
+                conversation_id=conv_id,
+                message=content,
+                message_type=row.get("message_type", "outgoing"),
+                private=bool(row.get("private", False)),
+            )
+            cw_msg_id = result.get("id")
+            if cw_msg_id is None:
+                logger.warning(
+                    "Retry worker: Chatwoot response missing 'id' for conv %d message %d",
+                    conv_id,
+                    msg_id,
+                )
+            mark_message_sent(msg_id, cw_msg_id or 0)
+            logger.info("Retry worker: message id=%d sent successfully.", msg_id)
+        except Exception as exc:
+            logger.warning(
+                "Retry worker: message id=%d re-send failed: %s", msg_id, exc
+            )
+            try:
+                mark_message_failed(msg_id, str(exc))
+            except Exception as db_exc:
+                logger.warning(
+                    "Retry worker: could not update failure status for message %d: %s",
+                    msg_id,
+                    db_exc,
+                )
+
+
+def _start_retry_worker(stop_event: threading.Event) -> threading.Thread:
+    """Start a daemon thread that periodically retries failed messages.
+
+    Args:
+        stop_event: Set this event to stop the retry loop cleanly.
+
+    Returns:
+        The started :class:`threading.Thread`.
+    """
+
+    def _worker() -> None:
+        logger.info(
+            "Message retry worker started (poll every %ds).",
+            _RETRY_POLL_INTERVAL_SEC,
+        )
+        while not stop_event.wait(_RETRY_POLL_INTERVAL_SEC):
+            _retry_failed_messages()
+        logger.info("Message retry worker stopped.")
+
+    thread = threading.Thread(target=_worker, name="message-retry-worker", daemon=True)
+    thread.start()
+    return thread
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +246,11 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
                 conversation_id,
                 part[:120],
             )
-            _chatwoot_client.send_message(
-                conversation_id=conversation_id, message=part
-            )
+            try:
+                _send_message_with_tracking(conversation_id=conversation_id, content=part)
+            except Exception:
+                # Error already logged and persisted inside _send_message_with_tracking.
+                pass
             logger.info(
                 "Sent part %d/%d to Chatwoot for conversation %d",
                 idx,
@@ -115,6 +274,26 @@ def _process_buffered_messages(conversation_id: int, combined_text: str) -> None
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global _vector_store, _conversation_memory, _chatwoot_client, _message_buffer
+
+    # ------------------------------------------------------------------
+    # 1. Ensure the tata_agent database exists (creates it if missing).
+    # ------------------------------------------------------------------
+    try:
+        ensure_database()
+    except Exception as exc:
+        logger.warning("Database bootstrap failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
+    # 2. Ensure all entity tables exist in tata_agent.
+    # ------------------------------------------------------------------
+    try:
+        ensure_schema()
+    except Exception as exc:
+        logger.warning("Entity schema setup failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
+    # 3. Initialise RAG vector store and conversation memory.
+    # ------------------------------------------------------------------
     _vector_store = PgVectorStore()
     _conversation_memory = ConversationMemory()
     _chatwoot_client = ChatwootClient()
@@ -127,6 +306,23 @@ async def lifespan(application: FastAPI):
             store.ensure_collection()
         except Exception as exc:
             logger.warning("Could not connect to PostgreSQL at startup: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 4. Sync Help Center articles into the RAG vector store.
+    # ------------------------------------------------------------------
+    try:
+        logger.info("Triggering Help Center article sync into the RAG vector store.")
+        hc_sync = HelpCenterSync(_vector_store)
+        hc_sync.run()
+    except Exception as exc:
+        logger.warning("Help Center sync failed at startup (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
+    # 5. Start background retry worker for failed outgoing messages.
+    # ------------------------------------------------------------------
+    _retry_stop = threading.Event()
+    _start_retry_worker(_retry_stop)
+
     logger.info(
         "Chatwoot client configured: base_url=%r, account_id=%d, api_token_set=%s",
         settings.chatwoot_base_url,
@@ -143,7 +339,13 @@ async def lifespan(application: FastAPI):
             "Webhook token authentication is DISABLED (WEBHOOK_TOKEN is not set). "
             "All incoming requests will be accepted without token verification."
         )
+
     yield
+
+    # ------------------------------------------------------------------
+    # Shutdown: stop the retry worker cleanly.
+    # ------------------------------------------------------------------
+    _retry_stop.set()
 
 
 app = FastAPI(title="Tata Customer Agent", version="1.0.0", lifespan=lifespan)
