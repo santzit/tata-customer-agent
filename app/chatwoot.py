@@ -72,6 +72,106 @@ class ChatwootClient:
             )
             return result
 
+    # ------------------------------------------------------------------
+    # Help Center (read-only) methods
+    # ------------------------------------------------------------------
+
+    def list_portals(self) -> list[dict]:
+        """Return all Help Center portals for the configured account.
+
+        Returns:
+            A list of portal dicts as returned by the Chatwoot API.
+            Returns an empty list on any error.
+        """
+        url = f"{self.base_url}/api/v1/accounts/{self.account_id}/portals"
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, headers=self._headers())
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            logger.warning("ChatwootClient: failed to fetch portals: %s", exc)
+            return []
+
+        # Chatwoot returns {"payload": [...]} for the portals list.
+        portals = data.get("payload", data) if isinstance(data, dict) else data
+        if not isinstance(portals, list):
+            logger.warning(
+                "ChatwootClient: unexpected portals response shape: %r", type(data)
+            )
+            return []
+        return portals
+
+    def list_portal_articles(
+        self, portal_slug: str, *, status: str = "published", page: int = 1
+    ) -> dict:
+        """Return one page of articles for *portal_slug*.
+
+        Args:
+            portal_slug: The slug of the Help Center portal.
+            status: Article status filter (``"published"``, ``"draft"``, …).
+            page: 1-based page number.
+
+        Returns:
+            The ``payload`` dict from the Chatwoot API response, containing
+            ``articles`` (list) and ``meta`` (dict with ``total``).
+            Returns an empty dict on any error.
+        """
+        url = (
+            f"{self.base_url}/api/v1/accounts/{self.account_id}"
+            f"/portals/{portal_slug}/articles"
+        )
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(
+                    url,
+                    params={"status": status, "page": page},
+                    headers=self._headers(),
+                )
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            logger.warning(
+                "ChatwootClient: failed to fetch articles for portal '%s' page %d: %s",
+                portal_slug,
+                page,
+                exc,
+            )
+            return {}
+
+        payload = data.get("payload", {}) if isinstance(data, dict) else {}
+        if not isinstance(payload, dict):
+            logger.warning(
+                "ChatwootClient: unexpected articles payload for portal '%s': %r",
+                portal_slug,
+                type(payload),
+            )
+            return {}
+        return payload
+
+    def list_inboxes(self) -> list[dict]:
+        """Return all inboxes for the configured account.
+
+        Returns:
+            A list of inbox dicts as returned by the Chatwoot API.
+            Returns an empty list on any error.
+        """
+        url = f"{self.base_url}/api/v1/accounts/{self.account_id}/inboxes"
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, headers=self._headers())
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            logger.warning("ChatwootClient: failed to fetch inboxes: %s", exc)
+            return []
+
+        # Chatwoot returns {"payload": [...]}
+        inboxes = data.get("payload", data) if isinstance(data, dict) else data
+        if not isinstance(inboxes, list):
+            return []
+        return inboxes
+
     def handover_to_human(self, conversation_id: int) -> dict:
         """Hand over a conversation from the bot to a human agent.
 

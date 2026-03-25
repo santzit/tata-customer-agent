@@ -5,13 +5,16 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent import run_agent
 from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
+from app.db_models import ensure_schema
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
+from app.routers import accounts, helpcenter, settings as settings_router
 
 _log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logging.basicConfig(
@@ -122,6 +125,11 @@ async def lifespan(application: FastAPI):
         delay_seconds=settings.response_delay_seconds,
         on_flush=_process_buffered_messages,
     )
+    # Ensure the tata_accounts / tata_settings tables exist.
+    try:
+        ensure_schema()
+    except Exception as exc:
+        logger.warning("Could not create tata schema at startup: %s", exc)
     for store in (_vector_store, _conversation_memory):
         try:
             store.ensure_collection()
@@ -147,6 +155,26 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="Tata Customer Agent", version="1.0.0", lifespan=lifespan)
+
+# ---------------------------------------------------------------------------
+# CORS — allow the Next.js frontend (dev: port 3000, prod: same origin)
+# ---------------------------------------------------------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+
+app.include_router(accounts.router)
+app.include_router(settings_router.router)
+app.include_router(helpcenter.router)
 
 
 # ---------------------------------------------------------------------------

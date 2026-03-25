@@ -6,9 +6,23 @@ version: "3.9"
 
 services:
   tata-agent:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file:
       - .env
+    restart: unless-stopped
+
+  tata-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://tata-agent:8000
+    depends_on:
+      - tata-agent
     restart: unless-stopped
