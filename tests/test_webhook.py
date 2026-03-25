@@ -408,7 +408,7 @@ def test_chatwoot_client_sends_post_request():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     conversation_id = 77
@@ -440,7 +440,7 @@ def test_chatwoot_client_raises_on_error():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url="http://chatwoot.test",
@@ -461,7 +461,7 @@ def test_chatwoot_client_handover_posts_to_toggle_status():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     conversation_id = 77
@@ -500,7 +500,7 @@ def test_chatwoot_client_list_portals_returns_portal_list():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     client = ChatwootClient(
@@ -528,7 +528,7 @@ def test_chatwoot_client_list_portals_returns_empty_on_error():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url="http://chatwoot.test",
@@ -550,7 +550,7 @@ def test_chatwoot_client_list_portal_articles_returns_payload():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     account_id = 5
     portal_slug = "main-portal"
@@ -587,7 +587,7 @@ def test_chatwoot_client_list_portal_articles_returns_empty_on_error():
     import httpx
     import respx
 
-    from app.chatwoot import ChatwootClient
+    from app.services.chatwoot_client import ChatwootClient
 
     client = ChatwootClient(
         base_url="http://chatwoot.test",
