@@ -4,7 +4,7 @@
 - Do not change the tests (/tests/*), unless specifically instructed to do so.
 - Always run local tests (using pgvector/openai) before committing a new code, to ensure nothing is break
 - Use FastAPI and SQLModel to /web /webhook services
-- Use Next.js 15 for web frontend
+- Use Next.js 14x for web frontend
 - Use Python 3.11
 - Use Postgres/PgVector 16
 - Do not mock database for tests, always use postgres/pgvector for unit/local or CI tests, load test data to db tables if needed
