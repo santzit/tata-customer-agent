@@ -92,8 +92,10 @@ def ensure_pg_schema(
         return  # DB not available; pure unit tests are unaffected.
 
     from app.conversation_memory import ConversationMemory
+    from app.db_models import ensure_schema
     from app.pg_vector_store import PgVectorStore
 
+    ensure_schema(pg_dsn)
     PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table).ensure_table()
     ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()
 
