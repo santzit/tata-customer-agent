@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getAccounts, getTokenApis, saveTokenApi, Account } from '@/lib/api';
+import { getAccounts, syncAccounts, getTokenApis, saveTokenApi, Account } from '@/lib/api';
 
 interface AccountRow extends Account {
   tokenApi: string;
@@ -14,14 +14,18 @@ export default function AccountsPage() {
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
 
-  useEffect(() => {
+  function loadFromDb() {
+    setLoading(true);
+    setLoadError('');
     Promise.all([getAccounts(), getTokenApis()])
       .then(([accounts, tokens]) => {
         setRows(
           accounts.map((a) => ({
             ...a,
-            tokenApi: tokens[String(a.id)] ?? '',
+            tokenApi: tokens[String(a.id)] ?? a.token_api ?? '',
             saving: false,
             saved: false,
             error: '',
@@ -30,7 +34,25 @@ export default function AccountsPage() {
       })
       .catch((e) => setLoadError(String(e)))
       .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    loadFromDb();
   }, []);
+
+  async function handleSync() {
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const result = await syncAccounts();
+      setSyncMsg(`✅ Synced ${result.synced} account(s) from Chatwoot`);
+      loadFromDb();
+    } catch (e) {
+      setSyncMsg(`❌ Sync failed: ${String(e)}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function updateToken(id: number, value: string) {
     setRows((prev) =>
@@ -58,12 +80,37 @@ export default function AccountsPage() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Accounts</h1>
-        <p className="text-gray-500 mt-1">
-          Accounts are retrieved directly from Chatwoot. Set the Bot Token API for each account.
-        </p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Accounts</h1>
+          <p className="text-gray-500 mt-1 text-sm">
+            Accounts are stored locally. Click <strong>Sync from Chatwoot</strong> to import. Set the Bot Token API per account.
+          </p>
+        </div>
+        <button
+          onClick={handleSync}
+          disabled={syncing}
+          className="ml-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-medium rounded-lg text-sm transition-colors whitespace-nowrap flex items-center gap-2"
+        >
+          {syncing ? (
+            <>
+              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Syncing…
+            </>
+          ) : (
+            '🔄 Sync from Chatwoot'
+          )}
+        </button>
       </div>
+
+      {syncMsg && (
+        <div className={`mb-4 p-3 rounded-lg text-sm ${syncMsg.startsWith('✅') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+          {syncMsg}
+        </div>
+      )}
 
       {loadError && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
@@ -77,12 +124,12 @@ export default function AccountsPage() {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
           </svg>
-          Loading accounts from Chatwoot…
+          Loading accounts from database…
         </div>
       ) : rows.length === 0 && !loadError ? (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-yellow-800 text-sm">
-          No accounts found. Make sure <code className="bg-yellow-100 px-1 rounded">CHATWOOT_MASTER_TOKEN</code> is set
-          and the token has access to at least one account.
+          No accounts in local database yet. Click <strong>Sync from Chatwoot</strong> to import accounts,
+          or send a message via the webhook to auto-register the account.
         </div>
       ) : (
         <div className="space-y-4">
@@ -102,21 +149,8 @@ export default function AccountsPage() {
                 </span>
               </div>
 
-              {/* Read-only Chatwoot fields */}
-              {Object.entries(row)
-                .filter(([k]) => !['id', 'name', 'tokenApi', 'saving', 'saved', 'error'].includes(k))
-                .slice(0, 4)
-                .map(([k, v]) => (
-                  <div key={k} className="flex gap-2 text-xs text-gray-500 mb-1">
-                    <span className="font-medium text-gray-600 capitalize min-w-[80px]">
-                      {k.replace(/_/g, ' ')}:
-                    </span>
-                    <span className="font-mono truncate">{String(v ?? '—')}</span>
-                  </div>
-                ))}
-
               {/* Bot Token API */}
-              <div className="mt-4 pt-4 border-t border-gray-100">
+              <div className="mt-2 pt-4 border-t border-gray-100">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Bot Token API
                   <span className="ml-2 text-xs text-gray-400 font-normal">

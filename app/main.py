@@ -23,7 +23,7 @@ from app.db_models import (
 )
 from app.hc_sync import HelpCenterSync
 from app.web_models import create_web_tables
-from app.routers.web import router as web_router, _engine as web_engine
+from app.routers.web import router as web_router, _engine as web_engine, ensure_account_in_db
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
@@ -466,6 +466,17 @@ async def chatwoot_webhook(
 
     if not user_text or not conversation_id:
         return {"status": "ignored", "reason": "empty message or missing conversation_id"}
+
+    # Auto-register account in local DB if not already stored
+    meta_account = conversation.get("meta", {}).get("account", {}) or {}
+    raw_account_id = payload.get("account_id") or meta_account.get("id")
+    try:
+        webhook_account_id: int | None = int(raw_account_id) if raw_account_id else None
+    except (TypeError, ValueError):
+        webhook_account_id = None
+    if webhook_account_id is not None:
+        account_name = meta_account.get("name", "") or ""
+        ensure_account_in_db(webhook_account_id, account_name)
 
     logger.info(
         "Queuing message for conversation %d (delay=%.0fs): %s",

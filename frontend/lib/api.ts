@@ -23,6 +23,7 @@ export interface Status {
 export interface Account {
   id: number;
   name: string;
+  token_api?: string;
   [key: string]: unknown;
 }
 
@@ -85,7 +86,14 @@ export function getStatus(): Promise<Status> {
 }
 
 export function getAccounts(): Promise<Account[]> {
-  return request<Account[]>("/web/chatwoot/accounts");
+  return request<Account[]>("/web/accounts");
+}
+
+export function syncAccounts(): Promise<{ synced: number; accounts: Account[] }> {
+  return request<{ synced: number; accounts: Account[] }>("/web/accounts/sync", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function getInboxes(accountId?: number): Promise<Inbox[]> {

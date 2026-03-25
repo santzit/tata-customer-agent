@@ -68,13 +68,107 @@ class SyncHelpCenterBody(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Chatwoot endpoints
+# Accounts endpoints (DB-backed with Chatwoot sync)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts")
+def get_accounts_from_db():
+    """Return accounts stored in the local DB."""
+    try:
+        with Session(_engine) as session:
+            accounts = session.exec(select(ChatwootAccount)).all()
+        return [
+            {
+                "id": a.account_id,
+                "name": a.name,
+                "token_api": a.token_api,
+            }
+            for a in accounts
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/accounts/sync")
+def sync_accounts():
+    """Fetch accounts from Chatwoot and upsert them into the local DB."""
+    if not settings.chatwoot_master_token:
+        raise HTTPException(
+            status_code=502,
+            detail="CHATWOOT_MASTER_TOKEN is not set — cannot sync accounts.",
+        )
+    client = _web_client()
+    accounts = client.accounts.list()
+    synced = 0
+    try:
+        with Session(_engine) as session:
+            for acc in accounts:
+                account_id = acc.get("id")
+                name = acc.get("name", str(account_id))
+                if not account_id:
+                    continue
+                existing = session.exec(
+                    select(ChatwootAccount).where(ChatwootAccount.account_id == account_id)
+                ).first()
+                if existing:
+                    existing.name = name
+                else:
+                    session.add(ChatwootAccount(account_id=account_id, name=name))
+                synced += 1
+            session.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"synced": synced, "accounts": [{"id": a.get("id"), "name": a.get("name")} for a in accounts]}
+
+
+def ensure_account_in_db(account_id: int, account_name: str = "") -> None:
+    """Upsert a Chatwoot account into the local DB if it doesn't exist yet.
+
+    Called from the webhook handler on each incoming message so that accounts
+    are automatically registered without requiring a manual sync.
+    """
+    if not account_id:
+        return
+    try:
+        with Session(_engine) as session:
+            existing = session.exec(
+                select(ChatwootAccount).where(ChatwootAccount.account_id == account_id)
+            ).first()
+            if existing:
+                if account_name and not existing.name:
+                    existing.name = account_name
+                    session.commit()
+                return
+            # Try to get a better name from Chatwoot if we have a master token.
+            # Chatwoot's super-admin API exposes accounts via GET /api/v1/profile
+            # (which returns all accounts), so we iterate to find the matching one.
+            name = account_name or str(account_id)
+            if settings.chatwoot_master_token:
+                try:
+                    client = _web_client()
+                    chatwoot_accounts = client.accounts.list()
+                    for acc in chatwoot_accounts:
+                        if acc.get("id") == account_id:
+                            name = acc.get("name", name)
+                            break
+                except Exception:
+                    pass
+            session.add(ChatwootAccount(account_id=account_id, name=name))
+            session.commit()
+            logger.info("Auto-created account %d (%s) in local DB", account_id, name)
+    except Exception as exc:
+        logger.warning("Could not ensure account %d in DB: %s", account_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Chatwoot endpoints (live API pass-through)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/chatwoot/accounts")
 def get_chatwoot_accounts():
-    """Fetch accounts from Chatwoot using the master token (super-admin API)."""
+    """Fetch accounts directly from Chatwoot using the master token (live pass-through)."""
     client = _web_client()
     accounts = client.accounts.list()
     if accounts == [] and not settings.chatwoot_master_token:
