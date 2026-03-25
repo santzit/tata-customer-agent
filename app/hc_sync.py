@@ -1,7 +1,7 @@
 """Help Center synchronisation — index Chatwoot Help Center articles into the RAG vector store.
 
 Fetches published articles from the Chatwoot Help Center REST API via
-:class:`~app.chatwoot.ChatwootClient` and upserts them into the pgvector
+:class:`~app.services.chatwoot_client.ChatwootClient` and upserts them into the pgvector
 knowledge store so that the agent can retrieve relevant knowledge-base content
 when answering customer questions.
 
@@ -29,9 +29,9 @@ with documents ingested via other pipelines (e.g. :mod:`app.ingest_docs`).
 
 import logging
 
-from app.chatwoot import ChatwootClient
 from app.config import settings
 from app.pg_vector_store import PgVectorStore
+from app.services.chatwoot_client import ChatwootClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +42,14 @@ class HelpCenterSync:
     """Fetches published Help Center articles from the Chatwoot API and indexes
     them into the pgvector RAG store.
 
-    Uses :class:`~app.chatwoot.ChatwootClient` for all HTTP communication with
+    Uses :class:`~app.services.chatwoot_client.ChatwootClient` for all HTTP communication with
     the Chatwoot Help Center REST API.
 
     Args:
         vector_store: A :class:`~app.pg_vector_store.PgVectorStore` instance
             to upsert articles into.
         chatwoot_client: An optional pre-configured
-            :class:`~app.chatwoot.ChatwootClient`.  When omitted a new client
+            :class:`~app.services.chatwoot_client.ChatwootClient`.  When omitted a new client
             is created from the application :mod:`~app.config`.
     """
 

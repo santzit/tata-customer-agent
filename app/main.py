@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from app.agent import run_agent
-from app.chatwoot import ChatwootClient
+from app.services.chatwoot_client import ChatwootClient
 from app.config import settings
 from app.conversation_memory import ConversationMemory
 from app.db_bootstrap import ensure_database
