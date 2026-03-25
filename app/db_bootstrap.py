@@ -1,13 +1,15 @@
 """Boot-time database bootstrap.
 
-On startup, :func:`ensure_database` uses *POSTGRES_MASTER_DSN* (a superuser
-connection to the Postgres server) to:
+On startup, :func:`ensure_database` uses *POSTGRES_USER* and
+*POSTGRES_PASSWORD* (the same credentials used by the Postgres Docker
+container) to connect to the maintenance ``postgres`` database and:
 
 1. Create the ``tata_agent`` database if it does not yet exist.
 2. Enable the ``vector`` extension inside ``tata_agent``.
 
-The target database name is extracted from *POSTGRES_DSN*.  If
-*POSTGRES_MASTER_DSN* is empty the function is a no-op — the database is
+The host, port, and SSL parameters are derived from *POSTGRES_DSN* so there
+is a single source of truth for the server address.  If *POSTGRES_USER* or
+*POSTGRES_PASSWORD* is empty the function is a no-op — the database is
 assumed to already exist (e.g. when it is provisioned externally or by CI).
 """
 
@@ -23,6 +25,26 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _build_master_dsn(postgres_dsn: str, user: str, password: str) -> str | None:
+    """Build a superuser DSN targeting the maintenance ``postgres`` database.
+
+    Takes the host / port / SSL options from *postgres_dsn* and substitutes
+    the *user*, *password*, and database name (fixed to ``postgres``).
+
+    Returns ``None`` if the DSN cannot be parsed (missing hostname).
+    """
+    parsed = urllib.parse.urlparse(postgres_dsn)
+    if not parsed.hostname:
+        return None
+    # Keep query string (e.g. sslmode) but swap everything else.
+    master = parsed._replace(
+        scheme="postgresql",
+        netloc=f"{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(password, safe='')}@{parsed.hostname}:{parsed.port or 5432}",
+        path="/postgres",
+    )
+    return urllib.parse.urlunparse(master)
+
+
 def _db_name_from_dsn(dsn: str) -> str:
     """Return the database name component of a postgres DSN/URL."""
     parsed = urllib.parse.urlparse(dsn)
@@ -36,14 +58,17 @@ def ensure_database() -> None:
     This function is idempotent: running it against an already-provisioned
     server is safe and has no effect.
 
-    If :attr:`~app.config.Settings.postgres_master_dsn` is empty the call is
+    If :attr:`~app.config.Settings.postgres_user` or
+    :attr:`~app.config.Settings.postgres_password` is empty the call is
     a no-op so that deployments that pre-provision the database do not need
-    the master credential.
+    the superuser credentials.
     """
-    master_dsn = settings.postgres_master_dsn
-    if not master_dsn:
+    user = settings.postgres_user
+    password = settings.postgres_password
+
+    if not user or not password:
         logger.info(
-            "POSTGRES_MASTER_DSN is not set — skipping automatic database creation."
+            "POSTGRES_USER / POSTGRES_PASSWORD not set — skipping automatic database creation."
         )
         return
 
@@ -51,6 +76,14 @@ def ensure_database() -> None:
     if not db_name:
         logger.warning(
             "Could not extract database name from POSTGRES_DSN=%r — skipping bootstrap.",
+            settings.postgres_dsn,
+        )
+        return
+
+    master_dsn = _build_master_dsn(settings.postgres_dsn, user, password)
+    if not master_dsn:
+        logger.warning(
+            "Could not parse host from POSTGRES_DSN=%r — skipping bootstrap.",
             settings.postgres_dsn,
         )
         return
@@ -87,7 +120,7 @@ def ensure_database() -> None:
             conn.close()
     except Exception as exc:
         logger.warning(
-            "Could not connect to master DSN for database bootstrap: %s", exc
+            "Could not connect as superuser to create database: %s", exc
         )
         return
 
@@ -109,3 +142,4 @@ def ensure_database() -> None:
         logger.warning(
             "Could not enable pgvector extension in '%s': %s", db_name, exc
         )
+
