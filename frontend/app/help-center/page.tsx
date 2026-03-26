@@ -75,7 +75,7 @@ export default function HelpCenterPage() {
     <div className="max-w-4xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Help Center</h1>
-        <p className="text-gray-500 mt-1">Browse and sync knowledge base articles from Chatwoot.</p>
+        <p className="text-gray-500 mt-1">Browse locally synced knowledge base articles (source: local DB).</p>
       </div>
 
       {/* Controls */}
@@ -131,7 +131,7 @@ export default function HelpCenterPage() {
         </div>
       ) : (
         <>
-          <p className="text-sm text-gray-500 mb-4">{articles.length} article(s)</p>
+          <p className="text-sm text-gray-500 mb-4">{articles.length} article(s) · source: local DB</p>
           <div className="grid gap-4 sm:grid-cols-2">
             {articles.map((a) => (
               <ArticleCard key={a.id} article={a} />

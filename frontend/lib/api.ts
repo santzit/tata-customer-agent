@@ -122,7 +122,7 @@ export function getHelpCenterArticles(search?: string, locale?: string): Promise
   if (search) params.set("search", search);
   if (locale) params.set("locale", locale);
   const q = params.toString() ? `?${params}` : "";
-  return request<Article[]>(`/web/chatwoot/help-center${q}`);
+  return request<Article[]>(`/web/articles${q}`);
 }
 
 export function syncHelpCenter(accountId?: number, portalSlug?: string): Promise<{ synced: number }> {

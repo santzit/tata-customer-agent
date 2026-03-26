@@ -204,10 +204,9 @@ def get_chatwoot_teams(account_id: Optional[int] = Query(default=None)):
     return client.inboxes.list_teams(account_id=aid)
 
 
-@router.get("/chatwoot/help-center")
-def get_help_center_articles(
-    search: Optional[str] = Query(default=None),
-    locale: Optional[str] = Query(default=None),
+def _get_help_center_articles(
+    search: Optional[str],
+    locale: Optional[str],
 ):
     """Return locally stored help center articles, with optional filtering."""
     try:
@@ -237,6 +236,30 @@ def get_help_center_articles(
         ]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/chatwoot/help-center")
+def get_help_center_articles(
+    search: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+):
+    return _get_help_center_articles(search, locale)
+
+
+@router.get("/help-center")
+def get_local_help_center_articles(
+    search: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+):
+    return _get_help_center_articles(search, locale)
+
+
+@router.get("/articles")
+def get_local_articles(
+    search: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+):
+    return _get_help_center_articles(search, locale)
 
 
 @router.post("/chatwoot/sync-help-center")
