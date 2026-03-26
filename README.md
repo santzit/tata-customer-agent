@@ -89,6 +89,10 @@ Chatwoot HTTP client is replaced by a `MagicMock`.
   the key inline on the command line or commit it to source control.
 - A missing or invalid `OPENAI_API_KEY` causes tests to **fail** (not skip)
   with an `APIConnectionError`.
+- To run the suite without OpenAI calls, skip OpenAI-marked tests:
+  `pytest -m "not openai"`.
+- PostgreSQL/pgvector must be running; DB-dependent tests fail fast when the
+  database is unreachable.
 - The pgvector Docker image (`pgvector/pgvector:pg16`) ships with the
   `vector` extension pre-installed.  Plain PostgreSQL will not work.
 

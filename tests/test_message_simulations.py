@@ -25,6 +25,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.openai
+
 # ---------------------------------------------------------------------------
 # Docs helpers
 # ---------------------------------------------------------------------------
