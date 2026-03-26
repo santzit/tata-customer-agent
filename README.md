@@ -56,7 +56,13 @@ ngrok http 8000
 # 1. Install Python dependencies
 pip install -r requirements.txt
 
-# 2. Start PostgreSQL with pgvector (Docker — recommended for local dev)
+# 2. Install frontend dependencies and build
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 3. Start PostgreSQL with pgvector (Docker — recommended for local dev)
 docker run -d \
   --name tata-pgvector \
   -e POSTGRES_USER=postgres \
@@ -65,12 +71,12 @@ docker run -d \
   -p 5432:5432 \
   pgvector/pgvector:pg16
 
-# 3. Create your .env file and set credentials
+# 4. Create your .env file and set credentials
 cp .env.example .env
 # Open .env and set OPENAI_API_KEY=sk-...
 # POSTGRES_DSN is pre-filled to match the Docker command above
 
-# 4. Run the full test suite
+# 5. Run the full test suite
 pytest --tb=short -v -s
 ```
 
