@@ -56,17 +56,19 @@ def pg_test_memory_table() -> str:
 
 @pytest.fixture(scope="session")
 def require_pg(pg_dsn: str) -> None:
-    """Skip any test that declares this fixture when PostgreSQL is not reachable.
+    """Fail any test that declares this fixture when PostgreSQL is not reachable.
 
-    In CI the pgvector service container is always present.  During offline
-    local development without a running Postgres, DB-dependent tests skip
-    gracefully instead of failing with a connection error.
+    CI and local runs are expected to provide pgvector. DB-dependent tests must
+    run against a real Postgres instance instead of skipping silently.
     """
     try:
         conn = psycopg2.connect(pg_dsn, connect_timeout=3)
         conn.close()
     except Exception as exc:
-        pytest.skip(f"PostgreSQL not reachable: {exc}")
+        pytest.fail(
+            "PostgreSQL not reachable. Start pgvector/pg16 and set POSTGRES_DSN. "
+            f"Error: {exc}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +94,10 @@ def ensure_pg_schema(
         return  # DB not available; pure unit tests are unaffected.
 
     from app.conversation_memory import ConversationMemory
+    from app.db_models import ensure_schema
     from app.pg_vector_store import PgVectorStore
 
+    ensure_schema(pg_dsn)
     PgVectorStore(dsn=pg_dsn, table=pg_test_vector_table).ensure_table()
     ConversationMemory(dsn=pg_dsn, table=pg_test_memory_table).ensure_table()
 

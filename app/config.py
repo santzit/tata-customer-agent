@@ -1,5 +1,8 @@
 """Application configuration loaded from environment variables."""
 
+import urllib.parse
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,21 +27,39 @@ class Settings(BaseSettings):
     embedding_dimension: int = 1536  # vector column size; change to 3072 when using the large model
 
     # PostgreSQL / pgvector
-    # postgres_user / postgres_password — superuser credentials used **only** at
-    # boot time to create the tata_agent database.  These match the standard Docker
-    # POSTGRES_USER / POSTGRES_PASSWORD env vars used by the postgres container.
-    # Leave both blank to skip the automatic database-creation step.
+    # Components used to build postgres_dsn when POSTGRES_DSN is not set
+    # explicitly.  These match the standard Docker POSTGRES_* env vars so that
+    # docker-compose users only need to set POSTGRES_HOST / USER / PASSWORD / DB.
+    # postgres_user / postgres_password are also used **at boot time** by
+    # db_bootstrap.py to create the tata_agent database as a superuser.
     postgres_user: str = "postgres"
     postgres_password: str = "postgres"
-    postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/tata_agent"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "tata_agent"
+    # Set POSTGRES_DSN to override all component vars with a full connection URL.
+    postgres_dsn: str = ""
     pg_vector_table: str = "tata_knowledge"
     pg_memory_table: str = "tata_conversations"
     memory_max_turns: int = 10  # number of past conversation turns to include
+
+    @model_validator(mode="after")
+    def _build_postgres_dsn(self) -> "Settings":
+        """Build postgres_dsn from components when not explicitly provided."""
+        if not self.postgres_dsn:
+            user = urllib.parse.quote(self.postgres_user, safe="")
+            password = urllib.parse.quote(self.postgres_password, safe="")
+            self.postgres_dsn = (
+                f"postgresql://{user}:{password}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
+        return self
 
     # Chatwoot
     chatwoot_base_url: str = "http://localhost:3000"
     chatwoot_api_token: str = ""
     chatwoot_account_id: int = 1
+    chatwoot_master_token: str = ""  # super-admin token for Chatwoot API
 
     # Webhook
     webhook_token: str = ""

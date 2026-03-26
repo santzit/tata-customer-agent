@@ -88,7 +88,7 @@ def test_client(
     No OpenAI API call is made during fixture setup — the OpenAI client is created
     (object only) but never called until an agent-routed message arrives.
 
-    Skips automatically when PostgreSQL is not reachable.
+    Fails if PostgreSQL is not reachable.
     """
     from app.config import settings
     from app.conversation_memory import ConversationMemory
@@ -167,6 +167,7 @@ def test_webhook_ignores_empty_content(test_client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.openai
 def test_webhook_processes_incoming_message(test_client, mock_chatwoot_client):
     """A valid incoming customer message triggers a real agent reply via Chatwoot."""
     payload = _make_chatwoot_payload(
@@ -186,6 +187,7 @@ def test_webhook_processes_incoming_message(test_client, mock_chatwoot_client):
     assert len(call_kwargs.kwargs["message"]) > 0
 
 
+@pytest.mark.openai
 def test_webhook_processes_different_conversations(test_client, mock_chatwoot_client):
     """Each conversation ID is passed correctly to the Chatwoot client."""
     for conv_id in (4300, 4301, 4302):
@@ -311,6 +313,7 @@ def test_conversation_memory_history_filters_by_conversation(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.openai
 def test_pg_vector_store_upsert_and_search(
     require_pg, pg_dsn, pg_test_vector_table
 ):

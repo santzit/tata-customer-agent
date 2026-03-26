@@ -3,6 +3,14 @@
 ## Constraints 
 - Do not change the tests (/tests/*), unless specifically instructed to do so.
 - Always run local tests (using pgvector/openai) before committing a new code, to ensure nothing is break
+- Use FastAPI and SQLModel to /web /webhook services
+- Use Next.js 14x for web frontend
+- Use Python 3.11
+- Use Postgres/PgVector 16
+- Do not mock database for tests, always use postgres/pgvector for unit/local or CI tests, install postgres locally, load test data to db tables if needed
+- Do not mock OpenAI on unit/local or CI tests, use real data. Use OPENAI_API_KEY repository secret.
+- Use Redis and Arq for message queue
+  
 
 ## Local development prerequisites
 

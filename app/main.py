@@ -6,6 +6,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent import run_agent
 from app.services.chatwoot_client import ChatwootClient
@@ -21,6 +22,8 @@ from app.db_models import (
     reset_message_to_pending,
 )
 from app.hc_sync import HelpCenterSync
+from app.web_models import create_web_tables
+from app.routers.web import router as web_router, _engine as web_engine, ensure_account_in_db
 from app.message_buffer import MessageBuffer
 from app.pg_vector_store import PgVectorStore
 
@@ -292,6 +295,14 @@ async def lifespan(application: FastAPI):
         logger.warning("Entity schema setup failed (continuing anyway): %s", exc)
 
     # ------------------------------------------------------------------
+    # 2b. Ensure web frontend tables exist.
+    # ------------------------------------------------------------------
+    try:
+        create_web_tables(web_engine)
+    except Exception as exc:
+        logger.warning("Web table setup failed (continuing anyway): %s", exc)
+
+    # ------------------------------------------------------------------
     # 3. Initialise RAG vector store and conversation memory.
     # ------------------------------------------------------------------
     _vector_store = PgVectorStore()
@@ -349,6 +360,15 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="Tata Customer Agent", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(web_router)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +467,17 @@ async def chatwoot_webhook(
     if not user_text or not conversation_id:
         return {"status": "ignored", "reason": "empty message or missing conversation_id"}
 
+    # Auto-register account in local DB if not already stored
+    meta_account = conversation.get("meta", {}).get("account", {}) or {}
+    raw_account_id = payload.get("account_id") or meta_account.get("id")
+    try:
+        webhook_account_id: int | None = int(raw_account_id) if raw_account_id else None
+    except (TypeError, ValueError):
+        webhook_account_id = None
+    if webhook_account_id is not None:
+        account_name = meta_account.get("name", "") or ""
+        ensure_account_in_db(webhook_account_id, account_name)
+
     logger.info(
         "Queuing message for conversation %d (delay=%.0fs): %s",
         conversation_id,
@@ -457,3 +488,19 @@ async def chatwoot_webhook(
     _message_buffer.add_message(conversation_id, user_text)
 
     return {"status": "queued", "conversation_id": conversation_id}
+
+
+
+# ---------------------------------------------------------------------------
+# Serve Next.js static frontend from /app/static (populated by Dockerfile)
+# ---------------------------------------------------------------------------
+
+import os
+from pathlib import Path
+
+_STATIC_DIR = Path(__file__).parent.parent / "static"
+
+if _STATIC_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="frontend")
+    logger.info("Serving Next.js frontend from %s", _STATIC_DIR)
