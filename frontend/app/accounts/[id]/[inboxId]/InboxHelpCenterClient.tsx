@@ -153,7 +153,7 @@ export default function InboxHelpCenterClient() {
                 <div className="font-medium text-gray-900 text-sm line-clamp-2">{article.title}</div>
                 <div className="flex items-center gap-2 mt-1">
                   {article.locale && (
-                    <span className="text-xs text-gray-400">{article.locale as string}</span>
+                    <span className="text-xs text-gray-400">{article.locale}</span>
                   )}
                   {typeof article.portal_slug === 'string' && (
                     <span className="text-xs bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">
@@ -183,7 +183,7 @@ export default function InboxHelpCenterClient() {
                 <div className="flex gap-2 ml-4 shrink-0">
                   {selected.locale && (
                     <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
-                      {selected.locale as string}
+                      {selected.locale}
                     </span>
                   )}
                   {typeof selected.portal_slug === 'string' && (
