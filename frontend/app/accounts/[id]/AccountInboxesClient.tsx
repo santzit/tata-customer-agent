@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getAccountInboxes, syncAccountInboxes, DbInbox } from '@/lib/api';
@@ -15,18 +15,18 @@ export default function AccountInboxesClient() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
 
-  function loadInboxes() {
+  const loadInboxes = useCallback(() => {
     setLoading(true);
     setLoadError('');
     getAccountInboxes(accountId)
       .then(setInboxes)
       .catch((e) => setLoadError(String(e)))
       .finally(() => setLoading(false));
-  }
+  }, [accountId]);
 
   useEffect(() => {
     loadInboxes();
-  }, [accountId]);
+  }, [loadInboxes]);
 
   async function handleSync() {
     setSyncing(true);

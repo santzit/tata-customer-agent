@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getInboxHelpCenter, syncHelpCenter, Article } from '@/lib/api';
@@ -19,18 +19,18 @@ export default function InboxHelpCenterClient() {
   const [locale, setLocale] = useState('');
   const [selected, setSelected] = useState<Article | null>(null);
 
-  function loadArticles() {
+  const loadArticles = useCallback(() => {
     setLoading(true);
     setLoadError('');
     getInboxHelpCenter(accountId, inboxId, search || undefined, locale || undefined)
       .then(setArticles)
       .catch((e) => setLoadError(String(e)))
       .finally(() => setLoading(false));
-  }
+  }, [accountId, inboxId, search, locale]);
 
   useEffect(() => {
     loadArticles();
-  }, [accountId, inboxId, search, locale]);
+  }, [loadArticles]);
 
   async function handleSync() {
     setSyncing(true);
