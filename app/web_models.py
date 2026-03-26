@@ -64,3 +64,29 @@ class OpenAIConfig(SQLModel, table=True):
 def create_web_tables(engine) -> None:
     """Create all web frontend SQLModel tables if they don't exist."""
     SQLModel.metadata.create_all(engine)
+    # Apply additive migrations for newly introduced columns.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "ALTER TABLE web_openai_config "
+            "ADD COLUMN IF NOT EXISTS api_endpoint TEXT NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE web_openai_config "
+            "ADD COLUMN IF NOT EXISTS embedding_model_small TEXT NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE web_openai_config "
+            "ADD COLUMN IF NOT EXISTS embedding_model_large TEXT NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE web_openai_config "
+            "ADD COLUMN IF NOT EXISTS llm_provider TEXT NOT NULL DEFAULT 'openai'"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE web_help_center_articles "
+            "ADD COLUMN IF NOT EXISTS portal_slug TEXT NOT NULL DEFAULT ''"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE web_chatwoot_inboxes "
+            "ADD COLUMN IF NOT EXISTS portal_slug TEXT NOT NULL DEFAULT ''"
+        )

@@ -147,7 +147,7 @@ export default function AccountsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Link
-                    href={`/accounts/${row.id}`}
+                    href={`/accounts/${row.id}/inbox`}
                     className="text-xs px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-medium transition-colors"
                   >
                     📥 View Inboxes

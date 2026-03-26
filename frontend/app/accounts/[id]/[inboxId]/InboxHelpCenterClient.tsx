@@ -57,7 +57,7 @@ export default function InboxHelpCenterClient() {
       <div className="mb-4 text-sm text-gray-500 flex items-center gap-1 flex-wrap">
         <Link href="/accounts" className="hover:text-indigo-600">Accounts</Link>
         <span>/</span>
-        <Link href={`/accounts/${accountId}`} className="hover:text-indigo-600">Account #{accountId}</Link>
+        <Link href={`/accounts/${accountId}/inbox`} className="hover:text-indigo-600">Account #{accountId}</Link>
         <span>/</span>
         <span className="text-gray-800 font-medium">Inbox #{inboxId} — Help Center</span>
       </div>
